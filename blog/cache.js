@@ -70,7 +70,7 @@ async function cachePages(request) {
         referrer: request.referrer
     });
 
-    const pageID = request.url.match(/archives\/(\d+)\/$/)[1];
+    const pageID = request.url.match(/archives\/(\d+)\//)[1];
 
     // load from cache
     if (enableCache(request)) {
