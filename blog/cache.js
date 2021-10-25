@@ -1,5 +1,15 @@
 'use strict';
 
+
+/* cache for site page and GraphQL query
+
+Listening on routes:
+
+    * blog.laisky.com/cfw/blog/*
+    * blog.laisky.com
+    * blog.laisky.com/archives/*
+*/
+
 const graphqlAPI = "https://blog.laisky.com/graphql/query/",
     oneDayTs = 3600 * 24;
 
@@ -18,29 +28,42 @@ addEventListener("fetch", (event) => {
 // dispatcher
 async function handleRequest(request) {
     console.log("handle request: " + request.url)
-    const pathname = (new URL(request.url)).pathname;
+    const url = new URL(request.url),
+        pathname = (url).pathname;
     let resp = null;
 
+
+    // jump to landing page
     if (pathname == "" || pathname == "/") {
         let url = new URL(request.url);
         url.pathname = "/archives/1/"
-        resp = Response.redirect(url.href, 301);
-    } else if (/^\/archives\/\d+\//.exec(pathname)) {
+        return Response.redirect(url.href, 301);
+    }
+
+    // cache
+    if (/^\/archives\/\d+\//.exec(pathname)) {
         resp = await cachePages(request);
     } else if (pathname.startsWith("/cfw/blog/posts/")) {
-        resp = await cachePosts(pathname);
+        resp = await cachePosts(request, pathname);
     } else if (pathname.startsWith("/cfw/blog/graphql/query")) {
         resp = await cacheGqQuery(request);
     }
 
-
     return resp;
+}
+
+// whether to force update cache
+//
+// `?force` will force to request raw site and refresh cache
+function enableCache(request) {
+    return (new URL(request.url)).searchParams.get("force") == null;
 }
 
 
 // cache pages
 async function cachePages(request) {
     console.log("cachePages for " + request.url)
+    // direct request origin site (bypass CDN)
     const newRequest = new Request(request.url.replace('blog.laisky.com', 'zz.laisky.com'), {
         method: request.method,
         headers: request.headers,
@@ -50,18 +73,23 @@ async function cachePages(request) {
     const pageID = request.url.match(/archives\/(\d+)\/$/)[1];
 
     // load from cache
-    const cached = await cacheGet("pages", pageID);
-    if (cached != null) {
-        return new Response(cached, {
-            headers: { "Content-Type": "text/html; charset=UTF-8" },
-        });
+    if (enableCache(request)) {
+        const cached = await cacheGet("pages", pageID);
+        if (cached != null) {
+            return new Response(cached, {
+                headers: { "Content-Type": "text/html; charset=UTF-8" },
+            });
+        }
     }
 
     console.log('request: ' + newRequest.url);
     const resp = await fetch(newRequest);
     const respBody = await resp.text();
     console.log("body", respBody);
-    await cacheSet("pages", pageID, respBody);
+    if (resp.status == 200) {
+        await cacheSet("pages", pageID, respBody);
+    }
+
     return new Response(respBody, {
         headers: resp.headers,
     });
@@ -86,16 +114,21 @@ async function cacheGqQuery(request) {
     const queryID = md5(JSON.stringify(reqBody));
 
     // load from cache
-    const cached = await cacheGet("gq", queryID);
-    if (cached != null) {
-        return newJSONResponse(cached);
+    if (enableCache(request)) {
+        const cached = await cacheGet("gq", queryID);
+        if (cached != null) {
+            return newJSONResponse(cached);
+        }
     }
 
     console.log('request: ' + newRequest.url);
     const resp = await fetch(newRequest);
     const respBody = await resp.json();
     console.log("body", respBody);
-    await cacheSet("gq", queryID, respBody);
+    if (resp.status == 200) {
+        await cacheSet("gq", queryID, respBody);
+    }
+
     return newJSONResponse(respBody);
 }
 
@@ -107,16 +140,18 @@ function newJSONResponse(respObj) {
 }
 
 // load and cache blog posts
-async function cachePosts(pathname) {
+async function cachePosts(request, pathname) {
     console.log("cachePosts for " + pathname);
     const postName = /\/posts\/(.+?)\//.exec(pathname)[1];
 
     // load from cache
-    const cached = await cacheGet("posts", postName);
-    if (cached != null) {
-        return new Response(JSON.stringify(cached), {
-            headers: { "Content-Type": "application/json" },
-        });
+    if (enableCache(request)) {
+        const cached = await cacheGet("posts", postName);
+        if (cached != null) {
+            return new Response(JSON.stringify(cached), {
+                headers: { "Content-Type": "application/json" },
+            });
+        }
     }
 
     // load from backend
@@ -134,7 +169,10 @@ async function cachePosts(pathname) {
     });
 
     const respJson = await resp.json();
-    await cacheSet("posts", postName, respJson);
+    if (resp.status == 200) {
+        await cacheSet("posts", postName, respJson);
+    }
+
     return newJSONResponse(respJson);
 }
 
