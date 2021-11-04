@@ -10,7 +10,7 @@ Listening on routes:
     * blog.laisky.com/archives/*
 */
 
-const graphqlAPI = "https://blog.laisky.com/graphql/query/",
+const graphqlAPI = "https://zz.laisky.com/graphql/query/",
     oneDayTs = 3600 * 24;
 
 addEventListener("fetch", (event) => {
@@ -43,9 +43,9 @@ async function handleRequest(request) {
     // cache
     if (/^\/archives\/\d+\//.exec(pathname)) {
         resp = await cachePages(request);
-    } else if (pathname.startsWith("/cfw/blog/posts/")) {
+    } else if (pathname.startsWith("/posts/")) {
         resp = await cachePosts(request, pathname);
-    } else if (pathname.startsWith("/cfw/blog/graphql/query")) {
+    } else if (pathname.startsWith("/graphql/query/")) {
         resp = await cacheGqQuery(request);
     }
 
@@ -63,8 +63,13 @@ function enableCache(request) {
 // cache pages
 async function cachePages(request) {
     console.log("cachePages for " + request.url)
+
+    let url = new URL(request.url);
+    url.hostname = 'zz.laisky.com'
+    console.log({ url });
+
     // direct request origin site (bypass CDN)
-    const newRequest = new Request(request.url.replace('blog.laisky.com', 'zz.laisky.com'), {
+    const newRequest = new Request(url.href, {
         method: request.method,
         headers: request.headers,
         referrer: request.referrer
@@ -73,23 +78,24 @@ async function cachePages(request) {
     const pageID = request.url.match(/archives\/(\d+)\//)[1];
 
     // load from cache
-    if (enableCache(request)) {
-        const cached = await cacheGet("pages", pageID);
-        if (cached != null) {
-            return new Response(cached, {
-                headers: { "Content-Type": "text/html; charset=UTF-8" },
-            });
-        }
-    }
+    // if (enableCache(request)) {
+    //     const cached = await cacheGet("pages", pageID);
+    //     if (cached != null) {
+    //         return new Response(cached, {
+    //             headers: { "Content-Type": "text/html; charset=UTF-8" },
+    //         });
+    //     }
+    // }
 
     console.log('request: ' + newRequest.url);
     const resp = await fetch(newRequest);
     const respBody = await resp.text();
-    console.log("body", respBody);
-    if (resp.status == 200) {
-        await cacheSet("pages", pageID, respBody);
+    // console.log("body", respBody);
+    if (resp.status != 200) {
+        throw new Error(resp.status + ": " + respBody);
     }
 
+    await cacheSet("pages", pageID, respBody);
     return new Response(respBody, {
         headers: resp.headers,
     });
@@ -106,6 +112,8 @@ async function cacheGqQuery(request) {
         body: JSON.stringify(reqBody),
         referrer: request.referrer
     });
+
+    console.log("gquery: " + reqBody['query']);
     if (!reqBody['query'].startsWith('query {')) {
         console.log("bypass non-query graphql request")
         return fetch(newRequest);
@@ -125,10 +133,11 @@ async function cacheGqQuery(request) {
     const resp = await fetch(newRequest);
     const respBody = await resp.json();
     console.log("body", respBody);
-    if (resp.status == 200) {
-        await cacheSet("gq", queryID, respBody);
+    if (resp.status != 200) {
+        throw new Error(resp.status + ": " + respBody);
     }
 
+    await cacheSet("gq", queryID, respBody);
     return newJSONResponse(respBody);
 }
 
@@ -169,10 +178,11 @@ async function cachePosts(request, pathname) {
     });
 
     const respJson = await resp.json();
-    if (resp.status == 200) {
-        await cacheSet("posts", postName, respJson);
+    if (resp.status != 200) {
+        throw new Error(resp.status + ": " + respJson);
     }
 
+    await cacheSet("posts", postName, respJson);
     return newJSONResponse(respJson);
 }
 
