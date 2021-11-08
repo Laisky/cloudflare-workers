@@ -7,8 +7,7 @@ Listening on routes:
 
     * blog.laisky.com
     * blog.laisky.com/p/*
-    * blog.laisky.com/archives/*
-    * blog.laisky.com/graphql/query/
+    * blog.laisky.com/graphql/query/v2/*
 */
 
 const graphqlAPI = "https://zz.laisky.com/graphql/query/",
@@ -143,11 +142,11 @@ async function insertTwitterCard(request, pathname) {
         body: queryBody
     });
     if (cardResp.status != 200) {
-        throw new Error(queryBody +"\n"+ cardResp.status + ": " + await cardResp.text());
+        throw new Error(queryBody + "\n" + cardResp.status + ": " + await cardResp.text());
     }
 
     const twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
-    console.debug("got twitter card: "+ twitterCard);
+    console.debug("got twitter card: " + twitterCard);
 
     const newRequest = await cloneRequestWithoutBody(request);
     const resp = await fetch(newRequest);
@@ -175,8 +174,9 @@ async function cacheGqQuery(request) {
         referrer: request.referrer
     });
 
+
     console.log("gquery: " + reqBody['query']);
-    if (!reqBody['query'].startsWith('query {')) {
+    if (!reqBody['query'].match(/^(query)? *\{/)) {
         console.log("bypass non-query graphql request")
         return fetch(newRequest);
     }
