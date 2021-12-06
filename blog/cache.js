@@ -145,14 +145,23 @@ async function insertTwitterCard(request, pathname) {
         throw new Error(queryBody + "\n" + cardResp.status + ": " + await cardResp.text());
     }
 
-    const twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
+    let twitterCard = null;
+    try {
+        // old post may not have twitter card
+        twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
+    } catch (e) {
+        console.error(e);
+    }
     console.debug("got twitter card: " + twitterCard);
 
     const newRequest = await cloneRequestWithoutBody(request);
     const resp = await fetch(newRequest);
     let html = await resp.text();
     // console.debug("got raw resp: " + html);
-    html = html.replace(/<\/head>/, twitterCard + '</head>');
+    if (twitterCard != null) {
+        html = html.replace(/<\/head>/, twitterCard + '</head>');
+    }
+
     return new Response(html, {
         headers: resp.headers,
     });
