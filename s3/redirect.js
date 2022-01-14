@@ -1,17 +1,11 @@
 'use strict';
 
+/* FaaS in front of https://s[123].laisky.com
 
-/* cache for site page and GraphQL query
-
-Listening on routes:
-
-    * blog.laisky.com
-    * blog.laisky.com/p/*
-    * blog.laisky.com/graphql/query/v2/*
 */
 
-const graphqlAPI = "https://zz.laisky.com/graphql/query/",
-    oneDayTs = 3600 * 24;
+
+const KvPrefixS3 = "s3";
 
 addEventListener("fetch", (event) => {
     event.respondWith(
@@ -24,7 +18,6 @@ addEventListener("fetch", (event) => {
     );
 });
 
-
 // dispatcher
 async function handleRequest(request) {
     console.log("handle request: " + request.url)
@@ -32,230 +25,42 @@ async function handleRequest(request) {
         pathname = (url).pathname;
     let resp = null;
 
-
-    // jump to landing page
-    if (pathname == "" || pathname == "/") {
-        let url = new URL(request.url);
-        url.pathname = "/archives/1/"
-        return Response.redirect(url.href, 301);
-    }
-
-    // cache
-    if (/^\/archives\/\d+\//.exec(pathname)) {
-        resp = await cachePages(request);
-    } else if (pathname.startsWith("/posts/")) {
-        resp = await cachePosts(request, pathname);
-    } else if (pathname.startsWith("/p/")) {
-        resp = await insertTwitterCard(request, pathname);
-    } else if (pathname.startsWith("/graphql/query/")) {
-        resp = await cacheGqQuery(request);
+    // console.log("pathname: " + pathname);
+    if (/\/uploads\/twitter\/[^\/]+\.[^\.\\]+/.exec(pathname)) {
+        resp = await redirect2HierachyDir(request);
+    } else {
+        resp = await fetch(request);
     }
 
     return resp;
 }
 
-// whether to force update cache
-//
-// `?force` will force to request raw site and refresh cache
-function enableCache(request) {
-    return (new URL(request.url)).searchParams.get("force") == null;
-}
+
+// redirect file url to hierachy dir by prefix of md5
+async function redirect2HierachyDir(request) {
+    const url = new URL(request.url),
+        pathname = (url).pathname,
+        path = pathname.split("/"),
+        filename = path[path.length - 1],
+        fMd5 = md5(filename),
+        redirect_url = "https://s3.laisky.com/uploads/twitter/" +
+            fMd5.substring(0, 2) + "/" + fMd5.substring(2, 4) +
+            "/" + filename;
+
+    // console.log("> pathname", pathname);
+    // console.log("> path", path);
+    // console.log("> filename", filename);
 
 
-// cache pages
-async function cachePages(request) {
-    console.log("cachePages for " + request.url)
-
-    let url = new URL(request.url);
-    url.hostname = 'zz.laisky.com';
-
-    // direct request origin site (bypass CDN)
-    const newRequest = new Request(url.href, {
+    console.log("redirect to " + redirect_url);
+    return fetch(new Request(redirect_url, {
         method: request.method,
         headers: request.headers,
         referrer: request.referrer
-    });
-
-    const pageID = request.url.match(/archives\/(\d+)\//)[1];
-
-    // load from cache
-    if (enableCache(request)) {
-        const cached = await cacheGet("pages", pageID);
-        if (cached != null) {
-            return new Response(cached, {
-                headers: { "Content-Type": "text/html; charset=UTF-8" },
-            });
-        }
-    }
-
-    console.log('request: ' + newRequest.url);
-    const resp = await fetch(newRequest);
-    const respBody = await resp.text();
-    // console.log("body", respBody);
-    if (resp.status != 200) {
-        throw new Error(resp.status + ": " + respBody);
-    }
-
-    await cacheSet("pages", pageID, respBody);
-    return new Response(respBody, {
-        headers: resp.headers,
-    });
-}
-
-function cloneRequestWithoutBody(request) {
-    let url = new URL(request.url);
-    url.hostname = 'zz.laisky.com';
-    return new Request(url.href, {
-        method: request.method,
-        headers: request.headers,
-        referrer: request.referrer
-    });
-}
-
-async function cloneRequestWithBody(request) {
-    let url = new URL(request.url);
-    url.hostname = 'zz.laisky.com';
-    return new Request(url.href, {
-        method: request.method,
-        headers: request.headers,
-        referrer: request.referrer,
-        body: (await request.blob())
-    });
+    }));
 }
 
 
-// insert twitter card into post page's html head
-async function insertTwitterCard(request, pathname) {
-    console.log("insertTwitterCard for " + pathname);
-    // load twitter card
-    const postName = /\/p\/(.+?)\//.exec(pathname)[1];
-    const queryBody = JSON.stringify({
-        operationName: "blog",
-        query: 'query blog {BlogTwitterCard(name: "' + postName + '")}',
-        variables: {}
-    });
-    const cardResp = await fetch(graphqlAPI, {
-        method: "POST",
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: queryBody
-    });
-    if (cardResp.status != 200) {
-        throw new Error(queryBody + "\n" + cardResp.status + ": " + await cardResp.text());
-    }
-
-    let twitterCard = null;
-    try {
-        // old post may not have twitter card
-        twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
-    } catch (e) {
-        console.error(e);
-    }
-    console.debug("got twitter card: " + twitterCard);
-
-    const newRequest = await cloneRequestWithoutBody(request);
-    const resp = await fetch(newRequest);
-    let html = await resp.text();
-    // console.debug("got raw resp: " + html);
-    if (twitterCard != null) {
-        html = html.replace(/<\/head>/, twitterCard + '</head>');
-    }
-
-    return new Response(html, {
-        headers: resp.headers,
-    });
-}
-
-
-// load and cache graphql read-only query
-async function cacheGqQuery(request) {
-    console.log("cacheGqQuery for " + request.url)
-
-    let url = new URL(request.url);
-    url.hostname = 'zz.laisky.com';
-
-    const reqBody = await request.json()
-    const newRequest = new Request(url, {
-        method: request.method,
-        headers: request.headers,
-        body: JSON.stringify(reqBody),
-        referrer: request.referrer
-    });
-
-
-    console.log("gquery: " + reqBody['query']);
-    if (!reqBody['query'].match(/^(query)? *\{/)) {
-        console.log("bypass non-query graphql request")
-        return fetch(newRequest);
-    }
-
-    const queryID = md5(JSON.stringify(reqBody));
-
-    // load from cache
-    if (enableCache(request)) {
-        const cached = await cacheGet("gq", queryID);
-        if (cached != null) {
-            return newJSONResponse(cached);
-        }
-    }
-
-    console.log('request: ' + newRequest.url);
-    const resp = await fetch(newRequest);
-    const respBody = await resp.json();
-    console.log("body", respBody);
-    if (resp.status != 200) {
-        throw new Error(resp.status + ": " + respBody);
-    }
-
-    await cacheSet("gq", queryID, respBody);
-    return newJSONResponse(respBody);
-}
-
-// 根据 object 封装一个新的 response
-function newJSONResponse(respObj) {
-    return new Response(JSON.stringify(respObj), {
-        headers: { "Content-Type": "application/json" }
-    });
-}
-
-// load and cache blog posts
-async function cachePosts(request, pathname) {
-    console.log("cachePosts for " + pathname);
-    const postName = /\/posts\/(.+?)\//.exec(pathname)[1];
-
-    // load from cache
-    if (enableCache(request)) {
-        const cached = await cacheGet("posts", postName);
-        if (cached != null) {
-            return new Response(JSON.stringify(cached), {
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-    }
-
-    // load from backend
-    console.log("request blog post " + postName)
-    const resp = await fetch(graphqlAPI, {
-        method: "POST",
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            operationName: "blog",
-            query: 'query blog {BlogPosts(name: "' + postName + '") {title,type,content,name,menu,tags,created_at,category {name,url}}}',
-            variables: {}
-        })
-    });
-
-    const respJson = await resp.json();
-    if (resp.status != 200) {
-        throw new Error(resp.status + ": " + respJson);
-    }
-
-    await cacheSet("posts", postName, respJson);
-    return newJSONResponse(respJson);
-}
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
@@ -276,7 +81,6 @@ async function cacheGet(prefix, key) {
 
     return JSON.parse(LZString.decompressFromUTF16(compressed));
 }
-
 
 
 // lz-string 1.4.4
