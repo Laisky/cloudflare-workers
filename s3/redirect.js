@@ -1,11 +1,12 @@
 'use strict';
 
-/* FaaS in front of https://s[123].laisky.com
+/* FaaS in front of https://s[123].laisky.com/uploads/twitter/*
 
 */
 
 
-const KvPrefixS3 = "s3";
+const oneDayTs = 3600 * 24,
+    KvPrefixS3 = "s3";
 
 addEventListener("fetch", (event) => {
     event.respondWith(
@@ -28,10 +29,13 @@ async function handleRequest(request) {
     // console.log("pathname: " + pathname);
     if (/\/uploads\/twitter\/[^\/]+\.[^\.\\]+/.exec(pathname)) {
         resp = await redirect2HierachyDir(request);
+    } else if (/\/uploads\/twitter\/test\//.exec(pathname)) {
+        resp = await test(request);
     } else {
         resp = await fetch(request);
     }
 
+    console.log(">> resp: ", resp);
     return resp;
 }
 
@@ -61,20 +65,37 @@ async function redirect2HierachyDir(request) {
 }
 
 
+async function test(request) {
+    const resp = await fetch(request);
+    let data = await cloneResp(resp);
+
+    await cacheSet(KvPrefixS3, "test", data);
+    data = await cacheGet(KvPrefixS3, "test");
+    return new Response(data.text, data);
+}
+
+async function cloneResp(resp) {
+    return new Response((await resp.text()), {
+        headers: resp.headers,
+        status: resp.status,
+        statusText: resp.statusText
+    });
+}
+
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
     key = prefix + "/" + key
     console.log("set cache " + key);
     const compressed = LZString.compressToUTF16(JSON.stringify(val));
-    return await KVBlog.put(key, compressed, { expirationTtl: oneDayTs });
+    return await KV.put(key, compressed, { expirationTtl: oneDayTs });
 }
 
 // get cache with decompress
 async function cacheGet(prefix, key) {
     key = prefix + "/" + key
     console.log('get cache ' + key);
-    const compressed = await KVBlog.get(key);
+    const compressed = await KV.get(key);
     if (compressed == null) {
         return null
     }
