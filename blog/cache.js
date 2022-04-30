@@ -11,7 +11,7 @@ Listening on routes:
 */
 
 const graphqlAPI = "https://blog.laisky.com/graphql/query/v2/",
-    oneDayTs = 3600 * 24;
+    cacheTTLSec = 3600;
 
 addEventListener("fetch", (event) => {
     event.respondWith(
@@ -257,7 +257,7 @@ async function cacheSet(prefix, key, val) {
     key = prefix + "/" + key
     console.log("set cache " + key);
     const compressed = LZString.compressToUTF16(JSON.stringify(val));
-    return await KVBlog.put(key, compressed, { expirationTtl: oneDayTs });
+    return await KVBlog.put(key, compressed, { expirationTtl: cacheTTLSec });
 }
 
 // get cache with decompress
