@@ -179,6 +179,14 @@ async function insertTwitterCard(request, pathname) {
 }
 
 
+function denyGQ(reqBody) {
+    if (reqBody.variables && reqBody.variables.type == "pateo") {
+        return true;
+    }
+
+    return false;
+}
+
 // load and cache graphql read-only query
 async function cacheGqQuery(request) {
     console.log("cacheGqQuery for " + request.url)
@@ -191,6 +199,12 @@ async function cacheGqQuery(request) {
     }
 
     const reqBody = await request.json()
+
+    if (denyGQ(reqBody)) {
+        // console.log("throw error" + denyGQ(reqBody));
+        throw new Error("pateo alert is disabled");
+    }
+
     const newRequest = new Request(url, {
         method: request.method,
         headers: request.headers,
@@ -427,21 +441,21 @@ var LZString = function () {
                             for (t = s[a], e = 0; h > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1;
                         l--, 0 == l && (l = Math.pow(2, h), h++), s[c] = f++, a = String(u)
                     } if ("" !== a) {
-                    if (Object.prototype.hasOwnProperty.call(p, a)) {
-                        if (a.charCodeAt(0) < 256) {
-                            for (e = 0; h > e; e++) m <<= 1, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++;
-                            for (t = a.charCodeAt(0), e = 0; 8 > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1
-                        } else {
-                            for (t = 1, e = 0; h > e; e++) m = m << 1 | t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t = 0;
-                            for (t = a.charCodeAt(0), e = 0; 16 > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1
-                        }
-                        l--, 0 == l && (l = Math.pow(2, h), h++), delete p[a]
-                    } else
-                        for (t = s[a], e = 0; h > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1;
-                    l--, 0 == l && (l = Math.pow(2, h), h++)
-                }
+                        if (Object.prototype.hasOwnProperty.call(p, a)) {
+                            if (a.charCodeAt(0) < 256) {
+                                for (e = 0; h > e; e++) m <<= 1, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++;
+                                for (t = a.charCodeAt(0), e = 0; 8 > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1
+                            } else {
+                                for (t = 1, e = 0; h > e; e++) m = m << 1 | t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t = 0;
+                                for (t = a.charCodeAt(0), e = 0; 16 > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1
+                            }
+                            l--, 0 == l && (l = Math.pow(2, h), h++), delete p[a]
+                        } else
+                            for (t = s[a], e = 0; h > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1;
+                        l--, 0 == l && (l = Math.pow(2, h), h++)
+                    }
                 for (t = 2, e = 0; h > e; e++) m = m << 1 | 1 & t, v == r - 1 ? (v = 0, d.push(n(m)), m = 0) : v++, t >>= 1;
-                for (;;) {
+                for (; ;) {
                     if (m <<= 1, v == r - 1) {
                         d.push(n(m));
                         break
@@ -481,7 +495,7 @@ var LZString = function () {
                     case 2:
                         return ""
                 }
-                for (f[3] = l, s = l, w.push(l);;) {
+                for (f[3] = l, s = l, w.push(l); ;) {
                     if (A.index > o) return "";
                     for (p = 0, c = Math.pow(2, m), a = 1; a != c;) u = A.val & A.position, A.position >>= 1, 0 == A.position && (A.position = n, A.val = e(A.index++)), p |= (u > 0 ? 1 : 0) * a, a <<= 1;
                     switch (l = p) {
