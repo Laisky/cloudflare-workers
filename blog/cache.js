@@ -10,7 +10,8 @@ Listening on routes:
     * blog.laisky.com/graphql/query/v2/*
 */
 
-const graphqlAPI = "https://blog.laisky.com/graphql/query/v2/",
+const
+    graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600;
 
 addEventListener("fetch", (event) => {
@@ -39,17 +40,22 @@ async function handleRequest(request) {
     if (pathname == "" || pathname == "/") {
         let url = new URL(request.url);
         url.pathname = "/archives/1/"
+        console.log("301 jump to blog landing page")
         return Response.redirect(url.href, 301);
     }
 
     // cache
     if (/^\/archives\/\d+\//.exec(pathname)) {
+        console.log("await cachePages")
         resp = await cachePages(request);
     } else if (pathname.startsWith("/posts/")) {
+        console.log("await cachePosts")
         resp = await cachePosts(request, pathname);
     } else if (pathname.startsWith("/p/")) {
+        console.log("await insertTwitterCard")
         resp = await insertTwitterCard(request, pathname);
-    } else if (pathname.startsWith("/graphql/query/")) {
+    } else if (pathname.startsWith("/query/")) {
+        console.log("await cacheGqQuery")
         resp = await cacheGqQuery(request);
     }
 
@@ -179,6 +185,7 @@ async function insertTwitterCard(request, pathname) {
 }
 
 
+// denyGQ block some graphql requests
 function denyGQ(reqBody) {
     if (reqBody.variables && reqBody.variables.type == "pateo") {
         return true;
@@ -193,28 +200,42 @@ async function cacheGqQuery(request) {
 
     let url = new URL(request.url);
 
-    if (request.method == "OPTIONS") {
+    if (request.method == "OPTIONS" || request.method == "HEAD") {
         let req = cloneRequestWithoutBody(request);
         return fetch(req);
     }
 
-    const reqBody = await request.json()
+    let reqBody,
+        newRequest;
+   if (request.method == "GET") {
+        reqBody = {
+            "query": url.searchParams.get("query"),
+            "variables": url.searchParams.get("variables")
+        }
 
-    if (denyGQ(reqBody)) {
-        // console.log("throw error" + denyGQ(reqBody));
-        throw new Error("pateo alert is disabled");
+        newRequest = new Request(url, {
+            method: request.method,
+            headers: request.headers,
+            referrer: request.referrer
+        });
+    }else {
+        reqBody = await request.json();
+
+        if (denyGQ(reqBody)) {
+            // console.log("throw error" + denyGQ(reqBody));
+            throw new Error("pateo alert is disabled");
+        }
+
+        newRequest = new Request(url, {
+            method: request.method,
+            headers: request.headers,
+            body: JSON.stringify(reqBody),
+            referrer: request.referrer
+        });
     }
 
-    const newRequest = new Request(url, {
-        method: request.method,
-        headers: request.headers,
-        body: JSON.stringify(reqBody),
-        referrer: request.referrer
-    });
-
-
     console.log("gquery: " + reqBody['query']);
-    if (!reqBody['query'].match(/^(query)? *\{/)) {
+    if (!reqBody['query'].match(/^(query)?[ \w]*\{/)) {
         console.log("bypass non-query graphql request")
         return fetch(newRequest);
     }
@@ -236,11 +257,12 @@ async function cacheGqQuery(request) {
 
     console.log('request: ' + newRequest.url);
     const resp = await fetch(newRequest);
-    const respBody = await resp.json();
     // console.log("body", respBody);
     if (resp.status != 200) {
-        throw new Error(resp.status + ": " + respBody);
+        throw new Error("request upstream: " + resp.status + ": " + await resp.text());
     }
+
+    const respBody = await resp.json();
     if (respBody.errors != null) {
         throw new Error(respBody.errors);
     }
