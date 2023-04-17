@@ -113,6 +113,7 @@ async function cachePages(request) {
         throw new Error(resp.status + ": " + respBody);
     }
 
+    console.log(`save blog page ${pageID} to cache`)
     await cacheSet("pages", pageID, {
         headers: cloneHeaders(resp.headers),
         body: respBody
@@ -207,7 +208,7 @@ async function cacheGqQuery(request) {
 
     let reqBody,
         newRequest;
-   if (request.method == "GET") {
+    if (request.method == "GET") {
         reqBody = {
             "query": url.searchParams.get("query"),
             "variables": url.searchParams.get("variables")
@@ -218,7 +219,7 @@ async function cacheGqQuery(request) {
             headers: request.headers,
             referrer: request.referrer
         });
-    }else {
+    } else {
         reqBody = await request.json();
 
         if (denyGQ(reqBody)) {
@@ -236,7 +237,7 @@ async function cacheGqQuery(request) {
 
     console.log("gquery: " + reqBody['query']);
     if (!reqBody['query'].match(/^(query)?[ \w]*\{/)) {
-        console.log("bypass non-query graphql request")
+        console.log("bypass mutation graphql request")
         return fetch(newRequest);
     }
 
@@ -257,17 +258,19 @@ async function cacheGqQuery(request) {
 
     console.log('request: ' + newRequest.url);
     const resp = await fetch(newRequest);
-    // console.log("body", respBody);
     if (resp.status != 200) {
+        // console.log("body", await resp.text());
         throw new Error("request upstream: " + resp.status + ": " + await resp.text());
     }
 
     const respBody = await resp.json();
     if (respBody.errors != null) {
+        console.log("resp error: " + respBody);
+        console.log(respBody.errors);
         throw new Error(respBody.errors);
     }
 
-
+    console.log("save graphql query respons to cache")
     await cacheSet("gq", queryID, {
         headers: cloneHeaders(resp.headers),
         body: respBody
@@ -286,6 +289,11 @@ function cloneHeaders(headers) {
 
 // 根据 object 封装一个新的 response
 function newJSONResponse(headers, body) {
+    console.log("inject headers", headers);
+    headers['Access-Control-Allow-Origin'] = '*';
+    headers['access-control-allow-methods'] = 'GET, HEAD, POST, OPTIONS';
+    headers['access-control-allow-headers'] = '*';
+    headers['allow'] = 'OPTIONS, GET, POST';
     return new Response(JSON.stringify(body), {
         headers: headers
     });
@@ -327,6 +335,7 @@ async function cachePosts(request, pathname) {
         throw new Error(resp.status + ": " + respJson);
     }
 
+    console.log(`save blog post ${postName} respons to cache`)
     await cacheSet("posts", postName, {
         headers: cloneHeaders(resp.headers),
         body: respJson
