@@ -87,9 +87,9 @@ async function cachePages(request) {
     // direct request origin site (bypass CDN)
     const newRequest = new Request(url.href, {
         method: request.method,
-        headers: request.headers,
-        referrer: request.referrer
+        headers: request.headers
     });
+    newRequest.headers.set("referrer", request.referrer);
 
     const pageID = request.url.match(/archives\/(\d+)\//)[1];
 
@@ -113,11 +113,13 @@ async function cachePages(request) {
         throw new Error(resp.status + ": " + respBody);
     }
 
-    console.log(`save blog page ${pageID} to cache`)
-    await cacheSet("pages", pageID, {
-        headers: cloneHeaders(resp.headers),
-        body: respBody
-    });
+    if (enableCache(request)) {
+        console.log(`save blog page ${pageID} to cache`)
+        await cacheSet("pages", pageID, {
+            headers: cloneHeaders(resp.headers),
+            body: respBody
+        });
+    }
     return new Response(respBody, {
         headers: resp.headers,
     });
@@ -270,11 +272,14 @@ async function cacheGqQuery(request) {
         throw new Error(respBody.errors);
     }
 
-    console.log("save graphql query respons to cache")
-    await cacheSet("gq", queryID, {
-        headers: cloneHeaders(resp.headers),
-        body: respBody
-    });
+    if (enableCache(request)) {
+        console.log("save graphql query respons to cache")
+        await cacheSet("gq", queryID, {
+            headers: cloneHeaders(resp.headers),
+            body: respBody
+        });
+    }
+
     return newJSONResponse(resp.headers, respBody);
 }
 
@@ -335,11 +340,14 @@ async function cachePosts(request, pathname) {
         throw new Error(resp.status + ": " + respJson);
     }
 
-    console.log(`save blog post ${postName} respons to cache`)
-    await cacheSet("posts", postName, {
-        headers: cloneHeaders(resp.headers),
-        body: respJson
-    });
+    if (enableCache(request)) {
+        console.log(`save blog post ${postName} respons to cache`)
+        await cacheSet("posts", postName, {
+            headers: cloneHeaders(resp.headers),
+            body: respJson
+        });
+    }
+
     return newJSONResponse(resp.headers, respJson);
 }
 
