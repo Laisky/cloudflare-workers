@@ -31,7 +31,7 @@ addEventListener("fetch", (event) => {
 // dispatcher
 async function handleRequest(request) {
     console.log("handle request: " + request.url)
-    const url = new URL(request.url),
+    let url = new URL(request.url),
         pathname = (url).pathname;
     let resp = null;
 
@@ -42,6 +42,13 @@ async function handleRequest(request) {
         url.pathname = "/archives/1/"
         console.log("301 jump to blog landing page")
         return Response.redirect(url.href, 301);
+    }
+
+    // replace url to add tailing slash
+    const matched = request.url.match(/^([^\?#]*\/)([^\?#\.\/]+)([\?#].*)?$/);
+    if (matched) {
+    let new_url = `${matched[1]}${matched[2]}/${matched[3] || ''}`;
+        return Response.redirect(new_url, 301);
     }
 
     // cache
@@ -158,7 +165,7 @@ async function cloneRequestWithBody(request) {
 async function insertTwitterCard(request, pathname) {
     console.log("insertTwitterCard for " + pathname);
     // load twitter card
-    const postName = /\/p\/(.+?)\//.exec(pathname)[1];
+    const postName = /\/p\/([^\?#]+)\/?[\?#]?/.exec(pathname)[1];
     const queryBody = JSON.stringify({
         operationName: "blog",
         query: 'query blog {BlogTwitterCard(name: "' + postName + '")}',
