@@ -88,7 +88,11 @@ async function cacheSet(prefix, key, val) {
     key = prefix + "/" + key
     console.log("set cache " + key);
     const compressed = LZString.compressToUTF16(JSON.stringify(val));
-    return await KV.put(key, compressed, { expirationTtl: oneDayTs });
+    try {
+        return await KV.put(key, compressed, { expirationTtl: oneDayTs });
+    } catch (err) {
+        console.warn(`failed to set cache ${key}: ${err}`);
+    }
 }
 
 // get cache with decompress
