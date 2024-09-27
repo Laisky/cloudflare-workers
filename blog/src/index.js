@@ -18,7 +18,7 @@ Listening on routes:
 const
     cachePrefix = "blog-v2/",
     graphqlAPI = "https://gq.laisky.com/query/",
-    cacheTTLSec = 3600 * 24;
+    cacheTTLSec = 3600 * 24;  // 1day
 
 addEventListener("fetch", (event) => {
     event.respondWith(
@@ -206,13 +206,19 @@ async function insertTwitterCard(request, pathname) {
 }
 
 
-// denyGQ block some graphql requests
+
+/**
+ * denyGQ block some graphql requests
+ *
+ * @param {Object} reqBody
+ * @returns {String} return a string reason if deny, otherwise return null
+ */
 function denyGQ(reqBody) {
     if (reqBody.variables && reqBody.variables.type == "pateo") {
-        return true;
+        return "do not cache pateo alert";
     }
 
-    return false;
+    return null;
 }
 
 // load and cache graphql read-only query
@@ -221,84 +227,75 @@ async function cacheGqQuery(request) {
 
     let url = new URL(request.url);
 
-    if (request.method == "OPTIONS" || request.method == "HEAD") {
-        let req = cloneRequestWithoutBody(request);
-        return fetch(req);
+    if (request.method != "GET" && request.method != "POST") {
+        console.log("bypass non-GET/POST graphql request")
+        return await fetch(request);
     }
 
-    let reqBody,
-        newRequest;
+    let reqData;
     if (request.method == "GET") {
-        reqBody = {
+        reqData = {
             "query": url.searchParams.get("query"),
             "variables": url.searchParams.get("variables")
         }
-
-        newRequest = new Request(url, {
-            method: request.method,
-            headers: request.headers,
-            referrer: request.referrer
-        });
     } else {
-        reqBody = await request.json();
-
-        if (denyGQ(reqBody)) {
-            // console.log("throw error" + denyGQ(reqBody));
-            throw new Error("pateo alert is disabled");
-        }
-
-        newRequest = new Request(url, {
+        // read and copy request body
+        reqData = await request.json();
+        request = new Request(request.url, {
             method: request.method,
             headers: request.headers,
-            body: JSON.stringify(reqBody),
-            referrer: request.referrer
+            body: JSON.stringify(reqData)
         });
+
+        const denyReason = denyGQ(reqData)
+        if (denyReason) {
+            throw new Error(denyReason);
+        }
     }
 
-    console.log("gquery: " + reqBody['query']);
-    if (!reqBody['query'].match(/^(query)?[ \w]*\{/)) {
+    console.log("gquery: " + reqData['query']);
+    if (!reqData['query'].match(/^(query)?[ \w]*\{/)) {
         console.log("bypass mutation graphql request")
-        return fetch(newRequest);
+        return await fetch(request);
     }
 
-    const queryID = sha256(request.method + JSON.stringify(reqBody) + JSON.stringify(request.headers));
+    const cacheID = sha256(request.method + url + JSON.stringify(reqData));
 
     // load from cache
+    let bypassReason = 'skip_cache';
     if (isReadFromCache(request)) {
-        const cached = await cacheGet("gq", queryID);
-        if (cached != null
-            && cached.headers != null
-            && cached.body != null
-            && cached.headers instanceof Array
-            && cached.headers.length != 0) {
-            console.log(`cache hit for ${queryID} with headers ${cached.headers}`);
-            return newJSONResponse(cached.headers, cached.body);
+        const cached = await cacheGet("gq", cacheID);
+        bypassReason = 'cache_miss';
+        if (cached != null) {
+            console.log(`cache hit for ${cacheID} with headers ${cached.headers}`);
+            return new Response(cached.body, {
+                headers: headersFromArray(cached.headers)
+            });
         }
     }
 
-    console.log('request: ' + newRequest.url);
-    const resp = await fetch(newRequest);
+    console.log(`bypass graphql cache for reason: ${bypassReason}`);
+    const resp = await fetch(request);
     if (resp.status != 200) {
-        // console.log("body", await resp.text());
-        throw new Error("request upstream: " + resp.status + ": " + await resp.text());
+        console.warn(`failed to fetch ${resp.status}`);
+        return resp;
     }
 
     const respBody = await resp.json();
     if (respBody.errors != null) {
         console.log("resp error: " + respBody);
-        console.log(respBody.errors);
         throw new Error(respBody.errors);
     }
 
-    if (isSaveToCache(request)) {
-        console.log("save graphql query respons to cache")
-        await cacheSet("gq", queryID, {
-            headers: headersToArray(resp.headers),
-            body: respBody
-        });
-    }
+    console.log("save graphql query respons to cache")
+    await cacheSet("gq", cacheID, {
+        headers: headersToArray(resp.headers),
+        body: JSON.stringify(respBody)
+    });
 
-    return newJSONResponse(resp.headers, respBody);
+    return new Response(JSON.stringify(respBody), {
+        headers: resp.headers
+    });
 }
 
 /**
@@ -334,16 +331,16 @@ function headersFromArray(hs) {
 
 
 // 根据 object 封装一个新的 response
-function newJSONResponse(headers, body) {
-    console.log("inject headers", headers);
-    headers['Access-Control-Allow-Origin'] = '*';
-    headers['access-control-allow-methods'] = 'GET, HEAD, POST, OPTIONS';
-    headers['access-control-allow-headers'] = '*';
-    headers['allow'] = 'OPTIONS, GET, POST';
-    return new Response(JSON.stringify(body), {
-        headers: headers
-    });
-}
+// function newJSONResponse(headers, body) {
+//     console.log("inject headers", headers);
+//     headers['Access-Control-Allow-Origin'] = '*';
+//     headers['access-control-allow-methods'] = 'GET, HEAD, POST, OPTIONS';
+//     headers['access-control-allow-headers'] = '*';
+//     headers['allow'] = 'OPTIONS, GET, POST';
+//     return new Response(JSON.stringify(body), {
+//         headers: headers
+//     });
+// }
 
 // load and cache blog posts
 async function cachePosts(request, pathname) {

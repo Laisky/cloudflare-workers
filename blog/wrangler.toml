@@ -25,6 +25,8 @@ routes = [
   { pattern = "blog-dev.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog-dev.laisky.com/graphql/query/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "gq-dev.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
 ]
 
 kv_namespaces = [
