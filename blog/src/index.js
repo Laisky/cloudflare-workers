@@ -16,7 +16,7 @@ Listening on routes:
 */
 
 const
-    cachePrefix = "blog-v2/",
+    cachePrefix = "blog-v2.1/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;  // 1day
 
@@ -50,21 +50,15 @@ async function handleRequest(request) {
     }
 
     // cache
-    if (/^\/pages\/\d+\//.exec(pathname)) {
-        console.log("await cachePages")
-        resp = await cachePages(request, pathname);
-    } else if (pathname.startsWith("/posts/")) {
-        console.log("await cachePosts")
-        resp = await cachePosts(request, pathname);
-    } else if (pathname.startsWith("/p/")) {
+    if (pathname.startsWith("/p/")) {
         console.log("await insertTwitterCard")
         resp = await insertTwitterCard(request, pathname);
     } else if (pathname.startsWith("/query/") || pathname.startsWith("/graphql/query/")) {
         console.log("await cacheGqQuery")
         resp = await cacheGqQuery(request);
     } else {
-        console.log(`not match any route, fetch directly`);
-        resp = await fetch(request);
+        console.log(`await generalCache for ${pathname}`)
+        resp = await generalCache(request, pathname);
     }
 
     return resp;
@@ -73,71 +67,73 @@ async function handleRequest(request) {
 // whether to force update cache
 //
 // `?force` will force to request raw site and refresh cache
-function isReadFromCache(request) {
+function isCacheEnable(request, allowPost=false) {
     console.log("method", request.method);
-    if ((new URL(request.url)).searchParams.get("force") != null ||
-        request.method == "OPTIONS" ||
-        request.method == "DELETE") {
+    if ((new URL(request.url)).searchParams.get("force") != null) {
         return false;
     }
 
-    // return false;
-    return true;
-}
-
-
-// whether to force update cache
-function isSaveToCache(request) {
     switch (request.method) {
         case "GET":
-        case "HEAD":
-        case "OPTIONS":
             return true;
+        case "POST":
+            return allowPost;
         default:
             return false;
     }
 }
 
-// cache pages
-async function cachePages(request, pathname) {
-    console.log(`cachePages for ${pathname}`)
 
-    const cacheKey = `${sha256(pathname)}`;
+// whether to force update cache
+// function isSaveToCache(request) {
+//     switch (request.method) {
+//         case "GET":
+//         case "HEAD":
+//         case "OPTIONS":
+//             return true;
+//         default:
+//             return false;
+//     }
+// }
+
+// cache anything
+async function generalCache(request, pathname) {
+    console.log(`generalCache for ${pathname}`)
+    const cachePrefix = "general";
+
+    const cacheKey = sha256(`${request.method}:${pathname}`);
+    console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
-    let bypassReason = 'skip_cache';
-    if (isReadFromCache(request)) {
-        const cached = await cacheGet("pages", cacheKey);
-        bypassReason = 'cache_miss';
-        if (cached != null) {
-            return new Response(cached.body, {
-                headers: headersFromArray(cached.headers)
-            });
-        }
+    if (!isCacheEnable(request)) {
+        console.log("cache disabled")
+        return await fetch(request);
+    }
+
+    const cached = await cacheGet(cachePrefix, cacheKey);
+    if (cached != null) {
+        console.log(`hit cache`);
+        return new Response(cached.body, {
+            headers: headersFromArray(cached.headers)
+        });
     }
 
     // direct request origin site (bypass CDN)
-    console.log(`bypass page cache for reason: ${bypassReason}`);
+    console.log(`bypass page cache for cache miss`);
     const resp = await fetch(request);
     if (resp.status !== 200) {
         console.warn(`failed to directly fetch ${resp.status}`);
         return resp;
     }
 
+    console.log(`save to cache`)
     const respBody = await resp.text();
-    if (isSaveToCache(request)) {
-        console.log(`save blog page ${cacheKey} to cache`)
+    await cacheSet(cachePrefix, cacheKey, {
+        headers: headersToArray(resp.headers),
+        body: respBody
+    });
 
-        console.log(`Response Body:`, respBody);
-        console.log(`Response Headers:`, headersToArray(resp.headers));
-
-        await cacheSet("pages", cacheKey, {
-            headers: headersToArray(resp.headers),
-            body: respBody
-        });
-    }
-
-    console.log(`return blog page from origin`);
+    console.log(`return from origin`);
     return new Response(respBody, {
         headers: resp.headers,
     });
@@ -262,19 +258,20 @@ async function cacheGqQuery(request) {
     const cacheID = sha256(request.method + url + JSON.stringify(reqData));
 
     // load from cache
-    let bypassReason = 'skip_cache';
-    if (isReadFromCache(request)) {
-        const cached = await cacheGet("gq", cacheID);
-        bypassReason = 'cache_miss';
-        if (cached != null) {
-            console.log(`cache hit for ${cacheID} with headers ${cached.headers}`);
-            return new Response(cached.body, {
-                headers: headersFromArray(cached.headers)
-            });
-        }
+    if (!isCacheEnable(request, true)) {
+        console.log("cache disabled")
+        return await fetch(request);
     }
 
-    console.log(`bypass graphql cache for reason: ${bypassReason}`);
+    const cached = await cacheGet("gq", cacheID);
+    if (cached != null) {
+        console.log(`cache hit for ${cacheID} with headers ${cached.headers}`);
+        return new Response(cached.body, {
+            headers: headersFromArray(cached.headers)
+        });
+    }
+
+    console.log(`bypass graphql cache for cache miss`);
     const resp = await fetch(request);
     if (resp.status != 200) {
         console.warn(`failed to fetch ${resp.status}`);
@@ -306,7 +303,9 @@ async function cacheGqQuery(request) {
  * @returns
  */
 function headersToArray(headers) {
-    let hs = [];
+    let hs = [
+        ["X-Laisky-Cf-Cache", "HIT"],
+    ];
     for (let [key, value] of headers.entries()) {
         hs.push([key, value]);
     }
@@ -343,52 +342,52 @@ function headersFromArray(hs) {
 // }
 
 // load and cache blog posts
-async function cachePosts(request, pathname) {
-    console.log("cachePosts for " + pathname);
-    const postName = /\/posts\/(.+?)\//.exec(pathname)[1];
+// async function cachePosts(request, pathname) {
+//     console.log("cachePosts for " + pathname);
+//     const postName = /\/p\/(.+?)\//.exec(pathname)[1];
 
-    // load from cache
-    if (isReadFromCache(request)) {
-        const cached = await cacheGet("posts", postName);
-        if (cached != null) {
-            return new Response(JSON.stringify(cached.body), {
-                headers: headersFromArray(cached.headers)
-            });
-        }
-    }
+//     // load from cache
+//     if (isReadFromCache(request)) {
+//         const cached = await cacheGet("posts", postName);
+//         if (cached != null) {
+//             return new Response(cached.body, {
+//                 headers: headersFromArray(cached.headers)
+//             });
+//         }
+//     }
 
-    // load from backend
-    console.log("request blog post " + postName)
-    const resp = await fetch(graphqlAPI, {
-        method: "POST",
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            operationName: "blog",
-            query: 'query blog {BlogPosts(name: "' + postName + '") {title,type,content,name,menu,tags,created_at,category {name,url}}}',
-            variables: {}
-        })
-    });
+//     // load from backend
+//     console.log("request blog post " + postName)
+//     const resp = await fetch(graphqlAPI, {
+//         method: "POST",
+//         headers: {
+//             'Content-Type': 'application/json'
+//         },
+//         body: JSON.stringify({
+//             operationName: "blog",
+//             query: 'query blog {BlogPosts(name: "' + postName + '") {title,type,content,name,menu,tags,created_at,category {name,url}}}',
+//             variables: {}
+//         })
+//     });
 
-    const respBody = await resp.text();
-    if (resp.status != 200) {
-        console.warn(`failed to fetch ${resp.status}`);
-        return resp
-    }
+//     const respBody = await resp.text();
+//     if (resp.status != 200) {
+//         console.warn(`failed to fetch ${resp.status}`);
+//         return resp
+//     }
 
-    if (isSaveToCache(request)) {
-        console.log(`save blog post ${postName} respons to cache`)
-        await cacheSet("posts", postName, {
-            headers: headersToArray(resp.headers),
-            body: respBody
-        });
-    }
+//     if (isSaveToCache(request)) {
+//         console.log(`save blog post ${postName} respons to cache`)
+//         await cacheSet("posts", postName, {
+//             headers: headersToArray(resp.headers),
+//             body: respBody
+//         });
+//     }
 
-    return new Response(respBody, {
-        headers: resp.headers
-    });
-}
+//     return new Response(respBody, {
+//         headers: resp.headers
+//     });
+// }
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
