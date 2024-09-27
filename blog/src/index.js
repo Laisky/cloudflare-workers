@@ -64,10 +64,14 @@ async function handleRequest(request) {
     return resp;
 }
 
-// whether to force update cache
-//
-// `?force` will force to request raw site and refresh cache
-function isCacheEnable(request, allowPost=false) {
+/**
+ * isCacheEnable check whether to enable cache
+ *
+ * @param {Request} request
+ * @param {Boolean} allowPost
+ * @returns
+ */
+function isCacheEnable(request, allowPost = false) {
     console.log("method", request.method);
     if ((new URL(request.url)).searchParams.get("force") != null) {
         return false;
@@ -82,19 +86,6 @@ function isCacheEnable(request, allowPost=false) {
             return false;
     }
 }
-
-
-// whether to force update cache
-// function isSaveToCache(request) {
-//     switch (request.method) {
-//         case "GET":
-//         case "HEAD":
-//         case "OPTIONS":
-//             return true;
-//         default:
-//             return false;
-//     }
-// }
 
 // cache anything
 async function generalCache(request, pathname) {
@@ -328,66 +319,6 @@ function headersFromArray(hs) {
     return headers;
 }
 
-
-// 根据 object 封装一个新的 response
-// function newJSONResponse(headers, body) {
-//     console.log("inject headers", headers);
-//     headers['Access-Control-Allow-Origin'] = '*';
-//     headers['access-control-allow-methods'] = 'GET, HEAD, POST, OPTIONS';
-//     headers['access-control-allow-headers'] = '*';
-//     headers['allow'] = 'OPTIONS, GET, POST';
-//     return new Response(JSON.stringify(body), {
-//         headers: headers
-//     });
-// }
-
-// load and cache blog posts
-// async function cachePosts(request, pathname) {
-//     console.log("cachePosts for " + pathname);
-//     const postName = /\/p\/(.+?)\//.exec(pathname)[1];
-
-//     // load from cache
-//     if (isReadFromCache(request)) {
-//         const cached = await cacheGet("posts", postName);
-//         if (cached != null) {
-//             return new Response(cached.body, {
-//                 headers: headersFromArray(cached.headers)
-//             });
-//         }
-//     }
-
-//     // load from backend
-//     console.log("request blog post " + postName)
-//     const resp = await fetch(graphqlAPI, {
-//         method: "POST",
-//         headers: {
-//             'Content-Type': 'application/json'
-//         },
-//         body: JSON.stringify({
-//             operationName: "blog",
-//             query: 'query blog {BlogPosts(name: "' + postName + '") {title,type,content,name,menu,tags,created_at,category {name,url}}}',
-//             variables: {}
-//         })
-//     });
-
-//     const respBody = await resp.text();
-//     if (resp.status != 200) {
-//         console.warn(`failed to fetch ${resp.status}`);
-//         return resp
-//     }
-
-//     if (isSaveToCache(request)) {
-//         console.log(`save blog post ${postName} respons to cache`)
-//         await cacheSet("posts", postName, {
-//             headers: headersToArray(resp.headers),
-//             body: respBody
-//         });
-//     }
-
-//     return new Response(respBody, {
-//         headers: resp.headers
-//     });
-// }
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
