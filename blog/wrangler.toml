@@ -1,0 +1,29 @@
+# Top-level configuration
+name = "blog"
+main = "src/index.js"
+workers_dev = false
+compatibility_date = "2024-09-27"
+routes = [
+  { pattern = "blog.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "gq.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+]
+
+kv_namespaces = [
+  { binding = "KVBlog", id = "9cfba29224aa404d84af65be596ca153" },
+]
+
+[env.dev]
+name = "blog-dev"
+main = "src/index.js"
+workers_dev = true
+
+routes = [
+  # blog-dev.laisky.workers.dev
+  { pattern = "blog-dev.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog-dev.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+]
+
+kv_namespaces = [
+  { binding = "KVBlog", id = "9cfba29224aa404d84af65be596ca153" },
+]
