@@ -92,7 +92,7 @@ async function generalCache(request, pathname) {
     console.log(`generalCache for ${pathname}`)
     const cachePrefix = "general";
 
-    const cacheKey = sha256(`${request.method}:${pathname}`);
+    const cacheKey = sha256(`${request.method}:${request.url}`);
     console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
