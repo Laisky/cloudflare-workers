@@ -7,11 +7,12 @@ routes = [
   { pattern = "blog.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog.laisky.com/graphql/query/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "gq.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
 ]
 
 kv_namespaces = [
-  { binding = "KV", id = "efd98ae5891f4ab88ae1be309a2ff9ae" }, # blog
+  { binding = "KV", id = "efd98ae5891f4ab88ae1be309a2ff9ae" }, # PROD
 ]
 
 [env.dev]
