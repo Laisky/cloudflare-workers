@@ -1,4 +1,4 @@
-dev:
+run:
 	npx wrangler dev --ip 0.0.0.0 --port 44985
 
 lint:
