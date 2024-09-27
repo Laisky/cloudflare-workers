@@ -5,12 +5,13 @@ workers_dev = false
 compatibility_date = "2024-09-27"
 routes = [
   { pattern = "blog.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
-  { pattern = "blog.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "gq.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
 ]
 
 kv_namespaces = [
-  { binding = "KVBlog", id = "9cfba29224aa404d84af65be596ca153" },
+  { binding = "KV", id = "efd98ae5891f4ab88ae1be309a2ff9ae" }, # blog
 ]
 
 [env.dev]
@@ -21,9 +22,10 @@ workers_dev = true
 routes = [
   # blog-dev.laisky.workers.dev
   { pattern = "blog-dev.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
-  { pattern = "blog-dev.laisky.com/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog-dev.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "blog-dev.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
 ]
 
 kv_namespaces = [
-  { binding = "KVBlog", id = "9cfba29224aa404d84af65be596ca153" },
+  { binding = "KV", id = "d48acfe0b8b7426cafa9234e5c5d7ee2" }, # DEV
 ]

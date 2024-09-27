@@ -9,12 +9,14 @@ import { sha256 } from 'js-sha256';
 Listening on routes:
 
     * blog.laisky.com
-    * blog.laisky.com/*
+    * blog.laisky.com/p/*
+    * blog.laisky.com/pages/*
     * blog.laisky.com/graphql/query/*
     * gq.laisky.com/*
 */
 
 const
+    cachePrefix = "blog-v2/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;
 
@@ -103,33 +105,39 @@ async function cachePages(request, pathname) {
     const cacheKey = `${sha256(pathname)}`;
 
     // load from cache
+    let bypassReason = 'skip_cache';
     if (isReadFromCache(request)) {
         const cached = await cacheGet("pages", cacheKey);
+        bypassReason = 'cache_miss';
         if (cached != null) {
-            return new Response(cached, {
-                headers: {
-                    "Content-Type": "text/html; charset=UTF-8"
-                },
+            return new Response(cached.body, {
+                headers: headersFromArray(cached.headers)
             });
         }
     }
 
     // direct request origin site (bypass CDN)
-    console.log(`bypass page cache for ${pathname}`)
+    console.log(`bypass page cache for reason: ${bypassReason}`);
     const resp = await fetch(request);
     if (resp.status !== 200) {
+        console.warn(`failed to directly fetch ${resp.status}`);
         return resp;
     }
 
-    const respBody = await resp.blob();
+    const respBody = await resp.text();
     if (isSaveToCache(request)) {
         console.log(`save blog page ${cacheKey} to cache`)
+
+        console.log(`Response Body:`, respBody);
+        console.log(`Response Headers:`, headersToArray(resp.headers));
+
         await cacheSet("pages", cacheKey, {
-            headers: cloneHeaders(resp.headers),
+            headers: headersToArray(resp.headers),
             body: respBody
         });
     }
 
+    console.log(`return blog page from origin`);
     return new Response(respBody, {
         headers: resp.headers,
     });
@@ -193,7 +201,7 @@ async function insertTwitterCard(request, pathname) {
     }
 
     return new Response(html, {
-        headers: cloneHeaders(resp.headers),
+        headers: headersToArray(resp.headers),
     });
 }
 
@@ -285,7 +293,7 @@ async function cacheGqQuery(request) {
     if (isSaveToCache(request)) {
         console.log("save graphql query respons to cache")
         await cacheSet("gq", queryID, {
-            headers: cloneHeaders(resp.headers),
+            headers: headersToArray(resp.headers),
             body: respBody
         });
     }
@@ -293,13 +301,35 @@ async function cacheGqQuery(request) {
     return newJSONResponse(resp.headers, respBody);
 }
 
-function cloneHeaders(headers) {
+/**
+ * clone and convert Headers to Array,
+ * make it be able to be serialized by JSON.stringify
+ *
+ * @param {Headers} headers
+ * @returns
+ */
+function headersToArray(headers) {
     let hs = [];
     for (let [key, value] of headers.entries()) {
         hs.push([key, value]);
     }
 
     return hs;
+}
+
+/**
+ * convert Array to Headers
+ *
+ * @param {Array} hs
+ * @returns
+ */
+function headersFromArray(hs) {
+    let headers = new Headers();
+    for (let [key, value] of hs) {
+        headers.append(key, value);
+    }
+
+    return headers;
 }
 
 
@@ -324,10 +354,8 @@ async function cachePosts(request, pathname) {
     if (isReadFromCache(request)) {
         const cached = await cacheGet("posts", postName);
         if (cached != null) {
-            return new Response(JSON.stringify(cached), {
-                headers: {
-                    "Content-Type": "application/json"
-                },
+            return new Response(JSON.stringify(cached.body), {
+                headers: headersFromArray(cached.headers)
             });
         }
     }
@@ -346,42 +374,45 @@ async function cachePosts(request, pathname) {
         })
     });
 
-    const respJson = await resp.json();
+    const respBody = await resp.text();
     if (resp.status != 200) {
-        throw new Error(resp.status + ": " + respJson);
+        console.warn(`failed to fetch ${resp.status}`);
+        return resp
     }
 
-    if (isReadFromCache(request)) {
+    if (isSaveToCache(request)) {
         console.log(`save blog post ${postName} respons to cache`)
         await cacheSet("posts", postName, {
-            headers: cloneHeaders(resp.headers),
-            body: respJson
+            headers: headersToArray(resp.headers),
+            body: respBody
         });
     }
 
-    return newJSONResponse(resp.headers, respJson);
+    return new Response(respBody, {
+        headers: resp.headers
+    });
 }
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
-    key = prefix + "/" + key
-    console.log("set cache " + key);
+    const cacheKey = cachePrefix + prefix + "/" + key
+    console.log(`set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
     const compressed = LZString.compressToUTF16(JSON.stringify(val));
     try {
-        return await KVBlog.put(key, compressed, {
+        return await KV.put(cacheKey, compressed, {
             expirationTtl: cacheTTLSec
         });
     } catch (e) {
-        console.warn(`failed to set cache ${key}: ${e}`);
+        console.warn(`failed to set cache ${cacheKey}: ${e}`);
         return null;
     }
 }
 
 // get cache with decompress
 async function cacheGet(prefix, key) {
-    key = prefix + "/" + key
-    console.log('get cache ' + key);
-    const compressed = await KVBlog.get(key);
+    const cacheKey = cachePrefix + prefix + "/" + key
+    console.log('get cache ' + cacheKey);
+    const compressed = await KV.get(cacheKey);
     if (compressed == null) {
         return null
     }

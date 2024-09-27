@@ -2,7 +2,7 @@ import globals from "globals";
 import pluginJs from "@eslint/js";
 
 const customGlobals = {
-    KVBlog: "readonly",
+    KV: "readonly",
 };
 
 export default [
