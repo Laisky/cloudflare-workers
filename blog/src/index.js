@@ -322,10 +322,10 @@ function headersFromArray(hs) {
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
-    const cacheKey = cachePrefix + prefix + "/" + key
-    console.log(`set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
-    const compressed = LZString.compressToUTF16(JSON.stringify(val));
     try {
+        const cacheKey = cachePrefix + prefix + "/" + key
+        console.log(`set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
+        const compressed = LZString.compressToUTF16(JSON.stringify(val));
         return await KV.put(cacheKey, compressed, {
             expirationTtl: cacheTTLSec
         });
@@ -337,12 +337,17 @@ async function cacheSet(prefix, key, val) {
 
 // get cache with decompress
 async function cacheGet(prefix, key) {
-    const cacheKey = cachePrefix + prefix + "/" + key
-    console.log('get cache ' + cacheKey);
-    const compressed = await KV.get(cacheKey);
-    if (compressed == null) {
-        return null
-    }
+    try {
+        const cacheKey = cachePrefix + prefix + "/" + key
+        console.log('get cache ' + cacheKey);
+        const compressed = await KV.get(cacheKey);
+        if (compressed == null) {
+            return null
+        }
 
-    return JSON.parse(LZString.decompressFromUTF16(compressed));
+        return JSON.parse(LZString.decompressFromUTF16(compressed));
+    } catch (e) {
+        console.warn(`failed to get cache ${cacheKey}: ${e}`);
+        return null;
+    }
 }
