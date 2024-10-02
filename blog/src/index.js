@@ -16,7 +16,7 @@ Listening on routes:
 */
 
 const
-    cachePrefix = "blog-v2.7/",
+    cachePrefix = "blog-v2.9/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;  // 1day
 
@@ -68,9 +68,9 @@ async function handleRequest(request) {
 /**
  * isCacheEnable check whether to enable cache
  *
- * @param {Request} request
- * @param {Boolean} allowPost
- * @returns
+ * @param {Request} request - request object
+ * @param {Boolean} allowPost - whether to enable cache for POST method
+ * @returns {Boolean}
  */
 function isCacheEnable(request, allowPost = false) {
     console.log("method", request.method);
@@ -97,7 +97,7 @@ async function generalCache(request, pathname) {
 
     // load from cache
     let bypassCacheReason = "disabled";
-    if (isCacheEnable(request)) {
+    if (isCacheEnable(request, false)) {
         const cached = await cacheGet(cacheKey);
         bypassCacheReason = "cache-miss";
         if (cached != null) {
@@ -297,8 +297,10 @@ async function cacheGqQuery(request) {
 
     const respBody = await resp.json();
     if (respBody.errors != null) {
-        console.log("resp error: " + respBody);
-        throw new Error(respBody.errors);
+        console.warn(`resp error: ${JSON.stringify(respBody.errors)}`);
+        throw new Response(JSON.stringify(respBody), {
+            headers: resp.headers,
+        });
     }
 
     console.log("save graphql query respons to cache")
