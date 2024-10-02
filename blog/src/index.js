@@ -16,7 +16,7 @@ Listening on routes:
 */
 
 const
-    cachePrefix = "blog-v2.5/",
+    cachePrefix = "blog-v2.6/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;  // 1day
 
