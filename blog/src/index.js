@@ -16,7 +16,7 @@ Listening on routes:
 */
 
 const
-    cachePrefix = "blog-v2.6/",
+    cachePrefix = "blog-v2.7/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;  // 1day
 
@@ -160,8 +160,8 @@ async function insertTwitterCard(request, pathname) {
         const cached = await cacheGet(cacheKey);
         if (cached != null && typeof cached === "object") {
             console.log(`hit cache for ${cacheKey}`);
-            console.log(`cached headers: ${cached.headers}`);
-            console.log(`cached body: ${cached.body}`);
+            // console.log(`cached headers: ${cached.headers}`);
+            // console.log(`cached body: ${cached.body}`);
             return new Response(cached.body, {
                 headers: headersFromArray(cached.headers)
             });
@@ -349,9 +349,14 @@ function headersFromArray(hs) {
 // set cache with compress
 async function cacheSet(key, val) {
     const cacheKey = cachePrefix + sha256(key)
-    console.log(`try to set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
+    console.log(`try to set cache ${cacheKey}`);
+
+
+
     try {
-        const compressed = LZString.compressToUTF16(JSON.stringify(val));
+        // const compressed = LZString.compressToUTF16(JSON.stringify(val));
+        const compressed = JSON.stringify(val);
+
         return await KV.put(cacheKey, compressed, {
             expirationTtl: cacheTTLSec
         });
@@ -371,7 +376,8 @@ async function cacheGet(key) {
             return null
         }
 
-        return JSON.parse(LZString.decompressFromUTF16(compressed));
+        return JSON.parse(compressed);
+        // return JSON.parse(LZString.decompressFromUTF16(compressed));
     } catch (e) {
         console.warn(`failed to get cache ${cacheKey}: ${e}`);
         return null;
