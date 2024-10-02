@@ -16,7 +16,7 @@ Listening on routes:
 */
 
 const
-    cachePrefix = "blog-v2.3/",
+    cachePrefix = "blog-v2.4/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;  // 1day
 
@@ -58,7 +58,8 @@ async function handleRequest(request) {
         resp = await cacheGqQuery(request);
     } else {
         console.log(`await generalCache for ${pathname}`)
-        resp = await generalCache(request, pathname);
+        resp = await fetch(request);
+        // resp = await generalCache(request, pathname);
     }
 
     return resp;
@@ -96,21 +97,20 @@ async function generalCache(request, pathname) {
     console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
-    if (!isCacheEnable(request)) {
-        console.log("cache disabled")
-        return await fetch(request);
+    let bypassCacheReason = "disabled";
+    if (isCacheEnable(request)) {
+        const cached = await cacheGet(cachePrefix, cacheKey);
+        bypassCacheReason = "cache-miss";
+        if (cached != null) {
+            console.log(`hit cache`);
+            return new Response(cached.body, {
+                headers: headersFromArray(cached.headers)
+            });
+        }
     }
-
-    const cached = await cacheGet(cachePrefix, cacheKey);
-    if (cached != null) {
-        console.log(`hit cache`);
-        return new Response(cached.body, {
-            headers: headersFromArray(cached.headers)
-        });
-    }
+    console.log(`bypass cache for ${bypassCacheReason}`);
 
     // direct request origin site (bypass CDN)
-    console.log(`bypass page cache for cache miss`);
     const resp = await fetch(request);
     if (resp.status !== 200) {
         console.warn(`failed to directly fetch ${resp.status}`);
@@ -153,6 +153,32 @@ function cloneRequestWithoutBody(request) {
 // insert twitter card into post page's html head
 async function insertTwitterCard(request, pathname) {
     console.log("insertTwitterCard for " + pathname);
+
+    // load from cache
+    let bypassCacheReason = "disabled";
+    const cacheKey = sha256(request.url);
+    if (isCacheEnable(request, true)) {
+        const cached = await cacheGet("post", cacheKey);
+        if (cached != null && typeof cached === "object") {
+            console.log(`hit cache for ${cacheKey}`);
+            console.log(`cached headers: ${cached.headers}`);
+            console.log(`cached body: ${cached.body}`);
+            return new Response(cached.body, {
+                headers: headersFromArray(cached.headers)
+            });
+        }
+
+        bypassCacheReason = "cache-miss";
+    }
+    console.log(`bypass cache for ${bypassCacheReason}`);
+
+    const pageResp = await fetch(request);
+    if (pageResp.status != 200) {
+        console.warn(`failed to fetch request ${request.url}, got ${pageResp.status}`);
+        return pageResp;
+    }
+    let html = await pageResp.text();
+
     // load twitter card
     const postName = /\/p\/([^/?#]+)\/?[?#]?/.exec(pathname)[1];
     const queryBody = JSON.stringify({
@@ -168,27 +194,29 @@ async function insertTwitterCard(request, pathname) {
         body: queryBody
     });
     if (cardResp.status != 200) {
-        throw new Error(queryBody + "\n" + cardResp.status + ": " + await cardResp.text());
+        console.warn(`failed to fetch twitter card ${cardResp.status}`);
+        return await fetch(request);
     }
 
-    let twitterCard = null;
     try {
-        twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
+        const twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
+        if (twitterCard) {
+            console.debug("got twitter card: " + twitterCard);
+            html = html.replace(/<\/head>/, twitterCard + '</head>');
+        }
     } catch (e) {
         console.error(e);
     }
-    console.debug("got twitter card: " + twitterCard);
 
-    const newRequest = cloneRequestWithoutBody(request);
-    const resp = await fetch(newRequest);
-    let html = await resp.text();
-    // console.debug("got raw resp: " + html);
-    if (twitterCard != null) {
-        html = html.replace(/<\/head>/, twitterCard + '</head>');
-    }
+    // set cache
+    console.log(`set body ${html}`);
+    await cacheSet("post", cacheKey, {
+        headers: headersToArray(pageResp.headers),
+        body: html
+    });
 
     return new Response(html, {
-        headers: headersToArray(resp.headers),
+        headers: pageResp.headers,
     });
 }
 
@@ -249,20 +277,19 @@ async function cacheGqQuery(request) {
     const cacheID = sha256(request.method + url + JSON.stringify(reqData));
 
     // load from cache
-    if (!isCacheEnable(request, true)) {
-        console.log("cache disabled")
-        return await fetch(request);
+    let bypassCacheReason = "disabled";
+    if (isCacheEnable(request, true)) {
+        const cached = await cacheGet("gq", cacheID);
+        bypassCacheReason = "cache-miss";
+        if (cached != null) {
+            console.log(`cache hit for ${cacheID} with headers ${cached.headers}`);
+            return new Response(cached.body, {
+                headers: headersFromArray(cached.headers)
+            });
+        }
     }
+    console.log(`bypass graphql cache for ${bypassCacheReason}`);
 
-    const cached = await cacheGet("gq", cacheID);
-    if (cached != null) {
-        console.log(`cache hit for ${cacheID} with headers ${cached.headers}`);
-        return new Response(cached.body, {
-            headers: headersFromArray(cached.headers)
-        });
-    }
-
-    console.log(`bypass graphql cache for cache miss`);
     const resp = await fetch(request);
     if (resp.status != 200) {
         console.warn(`failed to fetch ${resp.status}`);
@@ -322,9 +349,9 @@ function headersFromArray(hs) {
 
 // set cache with compress
 async function cacheSet(prefix, key, val) {
+    const cacheKey = cachePrefix + prefix + "/" + key
+    console.log(`set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
     try {
-        const cacheKey = cachePrefix + prefix + "/" + key
-        console.log(`set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
         const compressed = LZString.compressToUTF16(JSON.stringify(val));
         return await KV.put(cacheKey, compressed, {
             expirationTtl: cacheTTLSec
@@ -337,9 +364,9 @@ async function cacheSet(prefix, key, val) {
 
 // get cache with decompress
 async function cacheGet(prefix, key) {
+    const cacheKey = cachePrefix + prefix + "/" + key
+    console.log('get cache ' + cacheKey);
     try {
-        const cacheKey = cachePrefix + prefix + "/" + key
-        console.log('get cache ' + cacheKey);
         const compressed = await KV.get(cacheKey);
         if (compressed == null) {
             return null
