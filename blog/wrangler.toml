@@ -5,6 +5,7 @@ workers_dev = false
 compatibility_date = "2024-09-27"
 routes = [
   { pattern = "blog.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  # { pattern = "blog.laisky.com/assets/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   # { pattern = "blog.laisky.com/graphql/query/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },  # too many requests
@@ -23,6 +24,7 @@ workers_dev = true
 routes = [
   # blog-dev.laisky.workers.dev
   { pattern = "blog-dev.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  # { pattern = "blog-dev.laisky.com/assets/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/graphql/query/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },

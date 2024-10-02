@@ -16,7 +16,7 @@ Listening on routes:
 */
 
 const
-    cachePrefix = "blog-v2.4/",
+    cachePrefix = "blog-v2.5/",
     graphqlAPI = "https://gq.laisky.com/query/",
     cacheTTLSec = 3600 * 24;  // 1day
 
@@ -58,8 +58,8 @@ async function handleRequest(request) {
         resp = await cacheGqQuery(request);
     } else {
         console.log(`await generalCache for ${pathname}`)
-        resp = await fetch(request);
-        // resp = await generalCache(request, pathname);
+        // resp = await fetch(request);
+        resp = await generalCache(request, pathname);
     }
 
     return resp;
@@ -91,15 +91,14 @@ function isCacheEnable(request, allowPost = false) {
 // cache anything
 async function generalCache(request, pathname) {
     console.log(`generalCache for ${pathname}`)
-    const cachePrefix = "general";
 
-    const cacheKey = sha256(`${request.method}:${request.url}`);
+    const cacheKey = `general:${request.method}:${request.url}`;
     console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
     let bypassCacheReason = "disabled";
     if (isCacheEnable(request)) {
-        const cached = await cacheGet(cachePrefix, cacheKey);
+        const cached = await cacheGet(cacheKey);
         bypassCacheReason = "cache-miss";
         if (cached != null) {
             console.log(`hit cache`);
@@ -119,7 +118,7 @@ async function generalCache(request, pathname) {
 
     console.log(`save to cache`)
     const respBody = await resp.text();
-    await cacheSet(cachePrefix, cacheKey, {
+    await cacheSet(cacheKey, {
         headers: headersToArray(resp.headers),
         body: respBody
     });
@@ -130,14 +129,14 @@ async function generalCache(request, pathname) {
     });
 }
 
-function cloneRequestWithoutBody(request) {
-    let url = new URL(request.url);
-    return new Request(url.href, {
-        method: request.method,
-        headers: request.headers,
-        referrer: request.referrer
-    });
-}
+// function cloneRequestWithoutBody(request) {
+//     let url = new URL(request.url);
+//     return new Request(url.href, {
+//         method: request.method,
+//         headers: request.headers,
+//         referrer: request.referrer
+//     });
+// }
 
 // async function cloneRequestWithBody(request) {
 //     let url = new URL(request.url);
@@ -156,9 +155,9 @@ async function insertTwitterCard(request, pathname) {
 
     // load from cache
     let bypassCacheReason = "disabled";
-    const cacheKey = sha256(request.url);
+    const cacheKey = `post:${request.method}:${request.url}`;
     if (isCacheEnable(request, true)) {
-        const cached = await cacheGet("post", cacheKey);
+        const cached = await cacheGet(cacheKey);
         if (cached != null && typeof cached === "object") {
             console.log(`hit cache for ${cacheKey}`);
             console.log(`cached headers: ${cached.headers}`);
@@ -210,7 +209,7 @@ async function insertTwitterCard(request, pathname) {
 
     // set cache
     console.log(`set body ${html}`);
-    await cacheSet("post", cacheKey, {
+    await cacheSet(cacheKey, {
         headers: headersToArray(pageResp.headers),
         body: html
     });
@@ -274,15 +273,15 @@ async function cacheGqQuery(request) {
         return await fetch(request);
     }
 
-    const cacheID = sha256(request.method + url + JSON.stringify(reqData));
+    const cacheKey = `graphql:${request.method}:${request.url}:${JSON.stringify(reqData)}`;
 
     // load from cache
     let bypassCacheReason = "disabled";
     if (isCacheEnable(request, true)) {
-        const cached = await cacheGet("gq", cacheID);
+        const cached = await cacheGet(cacheKey);
         bypassCacheReason = "cache-miss";
         if (cached != null) {
-            console.log(`cache hit for ${cacheID} with headers ${cached.headers}`);
+            console.log(`cache hit for ${cacheKey} with headers ${cached.headers}`);
             return new Response(cached.body, {
                 headers: headersFromArray(cached.headers)
             });
@@ -303,7 +302,7 @@ async function cacheGqQuery(request) {
     }
 
     console.log("save graphql query respons to cache")
-    await cacheSet("gq", cacheID, {
+    await cacheSet(cacheKey, {
         headers: headersToArray(resp.headers),
         body: JSON.stringify(respBody)
     });
@@ -348,9 +347,9 @@ function headersFromArray(hs) {
 
 
 // set cache with compress
-async function cacheSet(prefix, key, val) {
-    const cacheKey = cachePrefix + prefix + "/" + key
-    console.log(`set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
+async function cacheSet(key, val) {
+    const cacheKey = cachePrefix + sha256(key)
+    console.log(`try to set cache ${cacheKey}, val: ${JSON.stringify(val)}`);
     try {
         const compressed = LZString.compressToUTF16(JSON.stringify(val));
         return await KV.put(cacheKey, compressed, {
@@ -363,9 +362,9 @@ async function cacheSet(prefix, key, val) {
 }
 
 // get cache with decompress
-async function cacheGet(prefix, key) {
-    const cacheKey = cachePrefix + prefix + "/" + key
-    console.log('get cache ' + cacheKey);
+async function cacheGet(key) {
+    const cacheKey = cachePrefix + sha256(key)
+    console.log('try to get cache ' + cacheKey);
     try {
         const compressed = await KV.get(cacheKey);
         if (compressed == null) {
