@@ -15,7 +15,7 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-const CachePrefix = "blog-v2.12/",
+const CachePrefix = "blog-v2.14/",
     GraphqlAPI = "https://gq.laisky.com/query/",
     DefaultCacheTTLSec = 3600 * 24;  // 1day
 
@@ -74,6 +74,13 @@ async function handleRequest(env, request) {
 function isCacheEnable(request, allowPost = false) {
     console.log("method", request.method);
     if ((new URL(request.url)).searchParams.get("force") != null) {
+        return false;
+    }
+
+    // if diaable cache in headers
+    if (request.headers.get("Cache-Control") == "no-cache"
+        || request.headers.get("Cache-Control") == "max-age=0"
+        || request.headers.get("Pragma") == "no-cache") {
         return false;
     }
 
