@@ -16,6 +16,10 @@ kv_namespaces = [
   { binding = "KV", id = "efd98ae5891f4ab88ae1be309a2ff9ae" }, # PROD
 ]
 
+r2_buckets  = [
+	{ binding = "BUCKET", bucket_name = "prod" }
+]
+
 [env.dev]
 name = "blog-dev"
 main = "src/index.js"
@@ -33,4 +37,8 @@ routes = [
 
 kv_namespaces = [
   { binding = "KV", id = "d48acfe0b8b7426cafa9234e5c5d7ee2" }, # DEV
+]
+
+r2_buckets  = [
+	{ binding = "BUCKET", bucket_name = "dev" }
 ]

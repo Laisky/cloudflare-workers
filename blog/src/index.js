@@ -1,6 +1,6 @@
 'use strict';
 
-import * as LZString from 'lz-string';
+// import * as LZString from 'lz-string';
 import { sha256 } from 'js-sha256';
 
 
@@ -15,27 +15,26 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-const
-    cachePrefix = "blog-v2.9/",
+const cachePrefix = "blog-v2.12/",
     graphqlAPI = "https://gq.laisky.com/query/",
-    cacheTTLSec = 3600 * 24;  // 1day
+    DefaultCacheTTLSec = 3600 * 24;  // 1day
 
-addEventListener("fetch", (event) => {
-    event.respondWith(
-        handleRequest(event.request).catch(
-            (err) => {
-                console.error(err);
-                return new Response(err.stack, {
-                    status: 500
-                });
-            }
-        )
-    );
-});
+export default {
+    async fetch(request, env) {
+        try {
+            return await handleRequest(env, request);
+        } catch (e) {
+            console.error(`handle request failed: ${e}`);
+            return new Response(e.stack, {
+                status: 500
+            });
+        }
+    }
+};
 
 
 // dispatcher
-async function handleRequest(request) {
+async function handleRequest(env, request) {
     console.log("handle request: " + request.url)
     let url = new URL(request.url),
         pathname = (url).pathname;
@@ -52,14 +51,14 @@ async function handleRequest(request) {
     // cache
     if (pathname.startsWith("/p/")) {
         console.log("await insertTwitterCard")
-        resp = await insertTwitterCard(request, pathname);
+        resp = await insertTwitterCard(env, request, pathname);
     } else if (pathname.startsWith("/query/") || pathname.startsWith("/graphql/query/")) {
         console.log("await cacheGqQuery")
-        resp = await cacheGqQuery(request);
+        resp = await cacheGqQuery(env, request);
     } else {
         console.log(`await generalCache for ${pathname}`)
         // resp = await fetch(request);
-        resp = await generalCache(request, pathname);
+        resp = await generalCache(env, request, pathname);
     }
 
     return resp;
@@ -89,7 +88,7 @@ function isCacheEnable(request, allowPost = false) {
 }
 
 // cache anything
-async function generalCache(request, pathname) {
+async function generalCache(env, request, pathname) {
     console.log(`generalCache for ${pathname}`)
 
     const cacheKey = `general:${request.method}:${request.url}`;
@@ -98,7 +97,7 @@ async function generalCache(request, pathname) {
     // load from cache
     let bypassCacheReason = "disabled";
     if (isCacheEnable(request, false)) {
-        const cached = await cacheGet(cacheKey);
+        const cached = await cacheGet(env, cacheKey);
         bypassCacheReason = "cache-miss";
         if (cached != null) {
             console.log(`hit cache`);
@@ -118,7 +117,7 @@ async function generalCache(request, pathname) {
 
     console.log(`save to cache`)
     const respBody = await resp.text();
-    await cacheSet(cacheKey, {
+    await cacheSet(env, cacheKey, {
         headers: headersToArray(resp.headers),
         body: respBody
     });
@@ -150,14 +149,14 @@ async function generalCache(request, pathname) {
 
 
 // insert twitter card into post page's html head
-async function insertTwitterCard(request, pathname) {
+async function insertTwitterCard(env, request, pathname) {
     console.log("insertTwitterCard for " + pathname);
 
     // load from cache
     let bypassCacheReason = "disabled";
     const cacheKey = `post:${request.method}:${request.url}`;
     if (isCacheEnable(request, true)) {
-        const cached = await cacheGet(cacheKey);
+        const cached = await cacheGet(env, cacheKey);
         if (cached != null && typeof cached === "object") {
             console.log(`hit cache for ${cacheKey}`);
             // console.log(`cached headers: ${cached.headers}`);
@@ -209,7 +208,7 @@ async function insertTwitterCard(request, pathname) {
 
     // set cache
     console.log(`set body ${html}`);
-    await cacheSet(cacheKey, {
+    await cacheSet(env, cacheKey, {
         headers: headersToArray(pageResp.headers),
         body: html
     });
@@ -236,7 +235,7 @@ function denyGQ(reqBody) {
 }
 
 // load and cache graphql read-only query
-async function cacheGqQuery(request) {
+async function cacheGqQuery(env, request) {
     console.log("cacheGqQuery for " + request.url)
 
     let url = new URL(request.url);
@@ -278,7 +277,7 @@ async function cacheGqQuery(request) {
     // load from cache
     let bypassCacheReason = "disabled";
     if (isCacheEnable(request, true)) {
-        const cached = await cacheGet(cacheKey);
+        const cached = await cacheGet(env, cacheKey);
         bypassCacheReason = "cache-miss";
         if (cached != null) {
             console.log(`cache hit for ${cacheKey} with headers ${cached.headers}`);
@@ -304,7 +303,7 @@ async function cacheGqQuery(request) {
     }
 
     console.log("save graphql query respons to cache")
-    await cacheSet(cacheKey, {
+    await cacheSet(env, cacheKey, {
         headers: headersToArray(resp.headers),
         body: JSON.stringify(respBody)
     });
@@ -348,32 +347,42 @@ function headersFromArray(hs) {
 }
 
 
-// set cache with compress
-async function cacheSet(key, val) {
+/**
+ * cacheSet set cache with key, value, and ttl
+ *
+ * @param {string} key
+ * @param {any} val
+ * @param {number} ttl
+ * @returns
+ */
+async function cacheSet(env, key, val, ttl = DefaultCacheTTLSec) {
     const cacheKey = cachePrefix + sha256(key)
-    console.log(`try to set cache ${cacheKey}`);
-
-
-
-    try {
-        // const compressed = LZString.compressToUTF16(JSON.stringify(val));
-        const compressed = JSON.stringify(val);
-
-        return await KV.put(cacheKey, compressed, {
-            expirationTtl: cacheTTLSec
-        });
-    } catch (e) {
-        console.warn(`failed to set cache ${cacheKey}: ${e}`);
-        return null;
-    }
+    await Promise.all([
+        kvSet(env, cacheKey, val, ttl),
+        bucketSet(env, cacheKey, val, ttl)
+    ]);
 }
 
-// get cache with decompress
-async function cacheGet(key) {
+/**
+ * cacheGet get cache with key
+ *
+ * @param {string} key
+ * @returns {any|null} return null if not found
+ */
+async function cacheGet(env, key) {
     const cacheKey = cachePrefix + sha256(key)
-    console.log('try to get cache ' + cacheKey);
+    const results = await Promise.all([
+        kvGet(env, cacheKey),
+        bucketGet(env, cacheKey)
+    ]);
+
+    return results.find((v) => v != null) || null;
+}
+
+export const kvGet = async (env, key) => {
+    console.log('try to get kv ' + key);
     try {
-        const compressed = await KV.get(cacheKey);
+        const compressed = await env.KV.get(key);
         if (compressed == null) {
             return null
         }
@@ -381,7 +390,59 @@ async function cacheGet(key) {
         return JSON.parse(compressed);
         // return JSON.parse(LZString.decompressFromUTF16(compressed));
     } catch (e) {
-        console.warn(`failed to get cache ${cacheKey}: ${e}`);
+        console.warn(`failed to get kv ${key}: ${e}`);
+        return null;
+    }
+}
+
+export const kvSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
+    console.log(`try to set kv ${key}`);
+
+    try {
+        // const compressed = LZString.compressToUTF16(JSON.stringify(val));
+        const compressed = JSON.stringify(val);
+
+        return await env.KV.put(key, compressed, {
+            expirationTtl: ttl
+        });
+    } catch (e) {
+        console.warn(`failed to set kv ${key}: ${e}`);
+        return null;
+    }
+}
+
+async function bucketGet(env, key) {
+    try {
+        const object = await env.BUCKET.get(key);
+        if (object === null) {
+            console.debug(`R2 object "${key}" not found`);
+            return null;
+        }
+
+        const payload = JSON.parse(object);
+        if (payload.expiration < Date.now()) {
+            console.debug(`R2 object "${key}" expired`);
+            return null;
+        }
+
+        return payload.data;
+    } catch (e) {
+        console.warn(`failed to get bucket ${key}: ${e}`);
+        return null;
+    }
+}
+
+async function bucketSet(env, key, val, ttl = DefaultCacheTTLSec) {
+    console.log(`try to set bucket ${key}`);
+    try {
+        const payload = JSON.stringify({
+            data: val,
+            expiration: Date.now() + ttl * 1000
+        });
+
+        await env.BUCKET.put(key, payload);
+    } catch (e) {
+        console.warn(`failed to set bucket ${key}: ${e}`);
         return null;
     }
 }
