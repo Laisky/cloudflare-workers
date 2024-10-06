@@ -15,8 +15,8 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-const cachePrefix = "blog-v2.12/",
-    graphqlAPI = "https://gq.laisky.com/query/",
+const CachePrefix = "blog-v2.12/",
+    GraphqlAPI = "https://gq.laisky.com/query/",
     DefaultCacheTTLSec = 3600 * 24;  // 1day
 
 export default {
@@ -184,7 +184,7 @@ async function insertTwitterCard(env, request, pathname) {
         query: 'query blog {BlogTwitterCard(name: "' + postName + '")}',
         variables: {}
     });
-    const cardResp = await fetch(graphqlAPI, {
+    const cardResp = await fetch(GraphqlAPI, {
         method: "POST",
         headers: {
             'Content-Type': 'application/json'
@@ -356,7 +356,7 @@ function headersFromArray(hs) {
  * @returns
  */
 async function cacheSet(env, key, val, ttl = DefaultCacheTTLSec) {
-    const cacheKey = cachePrefix + sha256(key)
+    const cacheKey = CachePrefix + sha256(key)
     await Promise.all([
         kvSet(env, cacheKey, val, ttl),
         bucketSet(env, cacheKey, val, ttl)
@@ -370,7 +370,7 @@ async function cacheSet(env, key, val, ttl = DefaultCacheTTLSec) {
  * @returns {any|null} return null if not found
  */
 async function cacheGet(env, key) {
-    const cacheKey = cachePrefix + sha256(key)
+    const cacheKey = CachePrefix + sha256(key)
     const results = await Promise.all([
         kvGet(env, cacheKey),
         bucketGet(env, cacheKey)
@@ -420,7 +420,7 @@ async function bucketGet(env, key) {
         }
 
         const payload = JSON.parse(object);
-        if (payload.expiration < Date.now()) {
+        if (payload.expiration != 0 && payload.expiration < Date.now()) {
             console.debug(`R2 object "${key}" expired`);
             return null;
         }
