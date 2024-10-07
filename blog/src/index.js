@@ -17,7 +17,7 @@ Listening on routes:
 
 const CachePrefix = "blog-v2.14/",
     GraphqlAPI = "https://gq.laisky.com/query/",
-    DefaultCacheTTLSec = 3600 * 24;  // 1day
+    DefaultCacheTTLSec = 3600 * 24 * 7;  // 7day
 
 export default {
     async fetch(request, env) {
