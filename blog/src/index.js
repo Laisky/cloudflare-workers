@@ -68,27 +68,29 @@ async function handleRequest(env, request) {
  * isCacheEnable check whether to enable cache
  *
  * @param {Request} request - request object
- * @param {Boolean} allowPost - whether to enable cache for POST method
+ * @param {Boolean} cachePost - whether to enable cache for POST method
  * @returns {Boolean}
  */
-function isCacheEnable(request, allowPost = false) {
+function isCacheEnable(request, cachePost = false) {
     console.log("method", request.method);
+
+    // disable cache if force query param is set
     if ((new URL(request.url)).searchParams.get("force") != null) {
         return false;
     }
 
     // if diaable cache in headers
-    if (request.headers.get("Cache-Control") == "no-cache"
-        || request.headers.get("Cache-Control") == "max-age=0"
-        || request.headers.get("Pragma") == "no-cache") {
-        return false;
-    }
+    // if (request.headers.get("Cache-Control") == "no-cache"
+    //     || request.headers.get("Cache-Control") == "max-age=0"
+    //     || request.headers.get("Pragma") == "no-cache") {
+    //     return false;
+    // }
 
     switch (request.method) {
         case "GET":
             return true;
         case "POST":
-            return allowPost;
+            return cachePost;
         default:
             return false;
     }
