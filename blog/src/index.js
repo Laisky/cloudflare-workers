@@ -15,7 +15,7 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-const CachePrefix = "blog-v2.14/",
+const CachePrefix = "blog-v2.15/",
     GraphqlAPI = "https://gq.laisky.com/query/",
     DefaultCacheTTLSec = 3600 * 24 * 7;  // 7day
 
@@ -54,7 +54,7 @@ async function handleRequest(env, request) {
         resp = await insertTwitterCard(env, request, pathname);
     } else if (pathname.startsWith("/query/") || pathname.startsWith("/graphql/query/")) {
         console.log("await cacheGqQuery")
-        resp = await cacheGqQuery(env, request);
+        resp = await cacheGqQuery(env, request, pathname);
     } else {
         console.log(`await generalCache for ${pathname}`)
         // resp = await fetch(request);
@@ -100,7 +100,7 @@ function isCacheEnable(request, cachePost = false) {
 async function generalCache(env, request, pathname) {
     console.log(`generalCache for ${pathname}`)
 
-    const cacheKey = `general:${request.method}:${request.url}`;
+    const cacheKey = `general:${request.method}:${pathname}`;
     console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
@@ -163,7 +163,7 @@ async function insertTwitterCard(env, request, pathname) {
 
     // load from cache
     let bypassCacheReason = "disabled";
-    const cacheKey = `post:${request.method}:${request.url}`;
+    const cacheKey = `post:${request.method}:${pathname}`;
     if (isCacheEnable(request, true)) {
         const cached = await cacheGet(env, cacheKey);
         if (cached != null && typeof cached === "object") {
@@ -216,7 +216,6 @@ async function insertTwitterCard(env, request, pathname) {
     }
 
     // set cache
-    console.log(`set body ${html}`);
     await cacheSet(env, cacheKey, {
         headers: headersToArray(pageResp.headers),
         body: html
@@ -244,7 +243,7 @@ function denyGQ(reqBody) {
 }
 
 // load and cache graphql read-only query
-async function cacheGqQuery(env, request) {
+async function cacheGqQuery(env, request, pathname) {
     console.log("cacheGqQuery for " + request.url)
 
     let url = new URL(request.url);
@@ -281,7 +280,7 @@ async function cacheGqQuery(env, request) {
         return await fetch(request);
     }
 
-    const cacheKey = `graphql:${request.method}:${request.url}:${JSON.stringify(reqData)}`;
+    const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`;
 
     // load from cache
     let bypassCacheReason = "disabled";
@@ -365,6 +364,7 @@ function headersFromArray(hs) {
  * @returns
  */
 async function cacheSet(env, key, val, ttl = DefaultCacheTTLSec) {
+    console.log(`try to set cache key=${key}, val=${val}, ttl=${ttl}`);
     const cacheKey = CachePrefix + sha256(key)
     await Promise.all([
         kvSet(env, cacheKey, val, ttl),
@@ -408,10 +408,10 @@ export const kvSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
     console.log(`try to set kv ${key}`);
 
     try {
-        // const compressed = LZString.compressToUTF16(JSON.stringify(val));
-        const compressed = JSON.stringify(val);
+        // const payload = LZString.compressToUTF16(JSON.stringify(val));
+        const payload = JSON.stringify(val);
 
-        return await env.KV.put(key, compressed, {
+        return await env.KV.put(key, payload, {
             expirationTtl: ttl
         });
     } catch (e) {
@@ -421,6 +421,7 @@ export const kvSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
 }
 
 async function bucketGet(env, key) {
+    console.log(`try to get bucket ${key}`);
     try {
         const object = await env.BUCKET.get(key);
         if (object === null) {
@@ -428,7 +429,7 @@ async function bucketGet(env, key) {
             return null;
         }
 
-        const payload = JSON.parse(object);
+        const payload = JSON.parse(await object.text());
         if (payload.expiration != 0 && payload.expiration < Date.now()) {
             console.debug(`R2 object "${key}" expired`);
             return null;
@@ -442,7 +443,7 @@ async function bucketGet(env, key) {
 }
 
 async function bucketSet(env, key, val, ttl = DefaultCacheTTLSec) {
-    console.log(`try to set bucket ${key}`);
+    console.log(`try to set bucket key=${key}`);
     try {
         const payload = JSON.stringify({
             data: val,
