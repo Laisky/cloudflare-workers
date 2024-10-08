@@ -105,7 +105,7 @@ function isCacheEnable(request, cachePost = false) {
 async function generalCache(env, request, pathname) {
     console.log(`generalCache for ${pathname}`)
 
-    const cacheKey = `${CachePrefix}general:${request.method}:${pathname}`;
+    const cacheKey = `general:${request.method}:${pathname}`;
     console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
@@ -168,7 +168,7 @@ async function insertTwitterCard(env, request, pathname) {
 
     // load from cache
     let bypassCacheReason = "disabled";
-    const cacheKey = `${CachePrefix}post:${request.method}:${pathname}`;
+    const cacheKey = `post:${request.method}:${pathname}`;
     if (isCacheEnable(request, true)) {
         const cached = await cacheGet(env, cacheKey);
         if (cached != null && typeof cached === "object") {
@@ -285,7 +285,7 @@ async function cacheGqQuery(env, request, pathname) {
         return await fetch(request);
     }
 
-    const cacheKey = `${CachePrefix}graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`;
+    const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`;
 
     // load from cache
     let bypassCacheReason = "disabled";
