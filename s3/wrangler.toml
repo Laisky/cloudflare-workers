@@ -1,0 +1,37 @@
+# Top-level configuration
+name = "s3"
+main = "src/index.js"
+workers_dev = false
+compatibility_date = "2024-09-27"
+routes = [
+  { pattern = "s1.laisky.com/uploads/twitter/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "s2.laisky.com/uploads/twitter/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "s3.laisky.com/uploads/twitter/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+]
+
+kv_namespaces = [
+  { binding = "KV", id = "efd98ae5891f4ab88ae1be309a2ff9ae" }, # PROD
+]
+
+r2_buckets  = [
+	{ binding = "BUCKET", bucket_name = "prod" }
+]
+
+[env.dev]
+name = "s3-dev"
+main = "src/index.js"
+workers_dev = true
+
+routes = [
+  { pattern = "s1-dev.laisky.com/uploads/twitter/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "s2-dev.laisky.com/uploads/twitter/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+  { pattern = "s3-dev.laisky.com/uploads/twitter/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
+]
+
+kv_namespaces = [
+  { binding = "KV", id = "d48acfe0b8b7426cafa9234e5c5d7ee2" }, # DEV
+]
+
+r2_buckets  = [
+	{ binding = "BUCKET", bucket_name = "dev" }
+]

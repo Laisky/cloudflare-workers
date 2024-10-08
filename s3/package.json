@@ -6,6 +6,7 @@
     "wrangler": "^3.80.1"
   },
   "dependencies": {
-    "@laisky/cf-utils": "^0.0.5"
+    "@laisky/cf-utils": "^0.0.5",
+    "js-md5": "^0.8.3"
   }
 }

@@ -3,6 +3,11 @@
 import { sha256 } from 'js-sha256';
 
 const DefaultCacheTTLSec = 3600 * 24 * 7;  // 7day
+let _cachePrefix = "cache/";
+
+export const setDefaultCachePrefix = (prefix) => {
+    _cachePrefix = prefix;
+}
 
 /**
  * clone and convert Headers to Array,
@@ -48,7 +53,7 @@ export const headersFromArray = (hs) => {
  */
 export const cacheSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
     console.log(`try to set cache key=${key}, val=${val}, ttl=${ttl}`);
-    const cacheKey = sha256(key)
+    const cacheKey = `${_cachePrefix}${sha256(key)}`;
     await Promise.all([
         kvSet(env, cacheKey, val, ttl),
         bucketSet(env, cacheKey, val, ttl)
@@ -62,7 +67,7 @@ export const cacheSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
  * @returns {any|null} return null if not found
  */
 export const cacheGet = async (env, key) => {
-    const cacheKey = sha256(key)
+    const cacheKey = `${_cachePrefix}${sha256(key)}`;
     const results = await Promise.all([
         kvGet(env, cacheKey),
         bucketGet(env, cacheKey)
@@ -103,6 +108,12 @@ export const kvSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
     }
 }
 
+/**
+ * get value from bucket
+ *
+ * @param {string} key
+ * @returns
+ */
 export const bucketGet = async (env, key) => {
     console.log(`try to get bucket ${key}`);
     try {
@@ -125,6 +136,14 @@ export const bucketGet = async (env, key) => {
     }
 }
 
+/**
+ * set value to bucket
+ *
+ * @param {string} key
+ * @param {any} val
+ * @param {number} ttl
+ * @returns
+ */
 export const bucketSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
     console.log(`try to set bucket key=${key}`);
     try {
@@ -138,4 +157,36 @@ export const bucketSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
         console.warn(`failed to set bucket ${key}: ${e}`);
         return null;
     }
+}
+
+/**
+ * convert ArrayBuffer to base64
+ *
+ * @param {ArrayBuffer} buffer
+ * @returns {string}
+ */
+export const arrayBufferToBase64 = (buffer) => {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+/**
+ * convert base64 to ArrayBuffer
+ *
+ * @param {string} base64
+ * @returns {ArrayBuffer}
+ */
+export const arrayBufferFromBase64 = (base64) => {
+    const binary_string = atob(base64);
+    const len = binary_string.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binary_string.charCodeAt(i);
+    }
+    return bytes.buffer;
 }

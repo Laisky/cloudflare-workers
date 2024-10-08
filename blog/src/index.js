@@ -4,7 +4,8 @@ import {
     cacheSet,
     cacheGet,
     headersFromArray,
-    headersToArray
+    headersToArray,
+    setDefaultCachePrefix
 } from '@laisky/cf-utils';
 
 
@@ -19,8 +20,9 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-const CachePrefix = "blog-v2.16/",
-    GraphqlAPI = "https://gq.laisky.com/query/";
+setDefaultCachePrefix("blog-v2.17");
+
+const GraphqlAPI = "https://gq.laisky.com/query/";
 
 export default {
     async fetch(request, env) {
