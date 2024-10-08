@@ -15,7 +15,7 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-const CachePrefix = "blog-v2.15/",
+const CachePrefix = "blog-v2.16/",
     GraphqlAPI = "https://gq.laisky.com/query/",
     DefaultCacheTTLSec = 3600 * 24 * 7;  // 7day
 
