@@ -6,6 +6,6 @@
     "wrangler": "^3.80.1"
   },
   "dependencies": {
-    "js-sha256": "^0.11.0"
+    "@laisky/cf-utils": "^0.0.2"
   }
 }

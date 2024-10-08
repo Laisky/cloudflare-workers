@@ -1,11 +1,13 @@
 {
-  "name": "cf-worker-utils",
-  "version": "1.0.0",
+  "name": "@laisky/cf-utils",
+  "version": "0.0.2",
   "description": "useful utilities for cloudflare worker",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "author": "Laisky",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/Laisky/cloudflare-workers/cf-worker-utils"
@@ -14,9 +16,13 @@
     "cloudflare",
     "worker"
   ],
-  "author": "Laisky",
-  "license": "MIT",
   "dependencies": {
-    "lz-string": "^1.5.0"
+    "js-sha256": "^0.11.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.12.0",
+    "eslint": "^9.12.0",
+    "globals": "^15.10.0",
+    "wrangler": "^3.80.1"
   }
 }
