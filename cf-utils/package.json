@@ -10,7 +10,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Laisky/cloudflare-workers/cf-worker-utils"
+    "url": "https://github.com/Laisky/cloudflare-workers/tree/main/cf-utils"
   },
   "keywords": [
     "cloudflare",
