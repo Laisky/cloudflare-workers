@@ -5,7 +5,17 @@ import { sha256 } from 'js-sha256';
 const DefaultCacheTTLSec = 3600 * 24 * 7;  // 7day
 let _cachePrefix = "cache/";
 
+/**
+ * setDefaultCachePrefix set default cache prefix
+ * @param {string} prefix
+ * @returns
+ */
 export const setDefaultCachePrefix = (prefix) => {
+    // add tailing slash
+    if (!prefix.endsWith("/")) {
+        prefix += "/";
+    }
+
     _cachePrefix = prefix;
 }
 
@@ -76,6 +86,12 @@ export const cacheGet = async (env, key) => {
     return results.find((v) => v != null) || null;
 }
 
+/**
+ * cacheDel delete cache with key
+ *
+ * @param {string} key
+ * @returns
+ */
 export const kvGet = async (env, key) => {
     console.log('try to get kv ' + key);
     try {
@@ -92,6 +108,14 @@ export const kvGet = async (env, key) => {
     }
 }
 
+/**
+ * set value to kv
+ *
+ * @param {string} key
+ * @param {any} val
+ * @param {number} ttl - seconds to expire
+ * @returns
+ */
 export const kvSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
     console.log(`try to set kv ${key}`);
 
@@ -141,7 +165,7 @@ export const bucketGet = async (env, key) => {
  *
  * @param {string} key
  * @param {any} val
- * @param {number} ttl
+ * @param {number} ttl - seconds to expire
  * @returns
  */
 export const bucketSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {

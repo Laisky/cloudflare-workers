@@ -276,10 +276,10 @@
     "@jridgewell/resolve-uri" "^3.0.3"
     "@jridgewell/sourcemap-codec" "^1.4.10"
 
-"@laisky/cf-utils@^0.0.5":
-  version "0.0.5"
-  resolved "https://registry.yarnpkg.com/@laisky/cf-utils/-/cf-utils-0.0.5.tgz#68f5fea11740c1b83a96b731906fa4fe01e16130"
-  integrity sha512-hz7eXts1M/eAaNNltOmoKWjLx3nlYVmzOA6MV67SeuXkETeawyyxYaK3Px27vK9cKjw686Fz5DFBkaIbka4Jcg==
+"@laisky/cf-utils@^0.0.6":
+  version "0.0.6"
+  resolved "https://registry.yarnpkg.com/@laisky/cf-utils/-/cf-utils-0.0.6.tgz#129144d01937ec9aa5e2c591f988e4cef67e130e"
+  integrity sha512-E2FDjCQoFezLIN0Mph1XW7UiXQqQo74i+3nekExXQVIlRccoJe929GwU3FrA+XOPUnGNwx4IoVx3K8FN9H6sZQ==
   dependencies:
     js-sha256 "^0.11.0"
 
@@ -1172,10 +1172,10 @@ workerd@1.20240925.0:
     "@cloudflare/workerd-linux-arm64" "1.20240925.0"
     "@cloudflare/workerd-windows-64" "1.20240925.0"
 
-wrangler@^3.80.1:
-  version "3.80.1"
-  resolved "https://registry.yarnpkg.com/wrangler/-/wrangler-3.80.1.tgz#48695422d4ec7d3c21b322ebb5387ceadcf4db4b"
-  integrity sha512-5pBZpzrGpfAtIzF3iBXfZZ9DoP8OjwfIUYjYmddfkmoe6fSyY5r/+IFP56fb/biK5q6FV5HxUnonDiuNyJKnug==
+wrangler@^3.80.2:
+  version "3.80.2"
+  resolved "https://registry.yarnpkg.com/wrangler/-/wrangler-3.80.2.tgz#990f05912cf29fd917946ada70e50f2017348907"
+  integrity sha512-WSMDXoNcg+DjZ4i0RMJpz2TKrCbTtsxNsQAwyYg7LRZlfmTZQZOPbHWhATVa4fCsNL6eElN050fMHOW9MptM9g==
   dependencies:
     "@cloudflare/kv-asset-handler" "0.3.4"
     "@cloudflare/workers-shared" "0.5.4"
