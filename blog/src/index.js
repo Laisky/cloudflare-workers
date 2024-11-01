@@ -20,7 +20,7 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-setDefaultCachePrefix("blog-v2.21/");
+setDefaultCachePrefix("blog-v2.23/");
 
 const GraphqlAPI = "https://gq.laisky.com/query/";
 
@@ -103,9 +103,9 @@ function isCacheEnable(request, cachePost = false) {
 
 // cache anything
 async function generalCache(env, request, pathname) {
-    console.log(`generalCache for ${pathname}`)
+    console.log(`generalCache for ${request.url}`);
 
-    const cacheKey = `general:${request.method}:${pathname}`;
+    const cacheKey = `general:${request.method}:${request.url}`;
     console.log(`cacheKey: ${cacheKey}`);
 
     // load from cache
@@ -131,8 +131,12 @@ async function generalCache(env, request, pathname) {
 
     console.log(`save to cache`)
     const respBody = await resp.text();
+
+    let headers = headersToArray(resp.headers);
+    headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+
     await cacheSet(env, cacheKey, {
-        headers: headersToArray(resp.headers),
+        headers: headers,
         body: respBody
     });
 
@@ -220,9 +224,12 @@ async function insertTwitterCard(env, request, pathname) {
         console.error(e);
     }
 
+    let headers = headersToArray(pageResp.headers);
+    headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+
     // set cache
     await cacheSet(env, cacheKey, {
-        headers: headersToArray(pageResp.headers),
+        headers: headers,
         body: html
     });
 
@@ -315,9 +322,12 @@ async function cacheGqQuery(env, request, pathname) {
         });
     }
 
+    let headers = headersToArray(resp.headers);
+    headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+
     console.log("save graphql query respons to cache")
     await cacheSet(env, cacheKey, {
-        headers: headersToArray(resp.headers),
+        headers: headers,
         body: JSON.stringify(respBody)
     });
 
