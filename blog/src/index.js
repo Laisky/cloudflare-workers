@@ -84,12 +84,12 @@ function isCacheEnable(request, cachePost = false) {
         return false;
     }
 
-    // if diaable cache in headers
-    // if (request.headers.get("Cache-Control") == "no-cache"
-    //     || request.headers.get("Cache-Control") == "max-age=0"
-    //     || request.headers.get("Pragma") == "no-cache") {
-    //     return false;
-    // }
+    // if disable cache in headers
+    if (request.headers.get("Cache-Control") == "no-cache"
+        || request.headers.get("Cache-Control") == "max-age=0"
+        || request.headers.get("Pragma") == "no-cache") {
+        return false;
+    }
 
     switch (request.method) {
         case "GET":
