@@ -20,7 +20,7 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-setDefaultCachePrefix("blog-v2.23/");
+setDefaultCachePrefix("blog-v2.24/");
 
 const GraphqlAPI = "https://gq.laisky.com/query/";
 
