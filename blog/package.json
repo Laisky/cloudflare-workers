@@ -1,11 +1,11 @@
 {
   "devDependencies": {
-    "@eslint/js": "^9.14.0",
-    "eslint": "^9.14.0",
-    "globals": "^15.12.0",
-    "wrangler": "^3.86.0"
+    "@eslint/js": "^9.23.0",
+    "eslint": "^9.23.0",
+    "globals": "^16.0.0",
+    "wrangler": "^4.6.0"
   },
   "dependencies": {
-    "@laisky/cf-utils": "^0.0.6"
+    "@laisky/cf-utils": "^0.0.7"
   }
 }

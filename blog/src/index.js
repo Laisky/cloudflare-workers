@@ -20,17 +20,20 @@ Listening on routes:
     * gq.laisky.com/*
 */
 
-setDefaultCachePrefix("blog-v2.24/");
+// Using a more descriptive prefix might be helpful if versions change often
+setDefaultCachePrefix("blog-v2.25/"); // Increment version or use a date
 
 const GraphqlAPI = "https://gq.laisky.com/query/";
 
 export default {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) { // Add ctx for waitUntil
         try {
-            return await handleRequest(env, request);
+            // Use ctx.waitUntil for operations that shouldn't block the response (like caching)
+            return await handleRequest(request, env, ctx);
         } catch (e) {
-            console.error(`handle request failed: ${e}`);
-            return new Response(e.stack, {
+            console.error(`Error handling request: ${request.url}`, e.stack);
+            // Provide a generic error message to the client
+            return new Response("Internal Server Error", {
                 status: 500
             });
         }
@@ -39,34 +42,34 @@ export default {
 
 
 // dispatcher
-async function handleRequest(env, request) {
-    console.log("handle request: " + request.url)
-    let url = new URL(request.url),
-        pathname = (url).pathname;
-    let resp = null;
+async function handleRequest(request, env, ctx) {
+    console.log("Handling request: " + request.url);
+    const url = new URL(request.url);
+    const pathname = url.pathname;
 
-    // jump to landing page
-    if (pathname == "" || pathname == "/") {
-        let url = new URL(request.url);
-        url.pathname = "/pages/0/"
-        console.log("302 jump to blog landing page")
-        return Response.redirect(url.href, 302);
+    // 1. Redirect root path
+    if (pathname === "/" || pathname === "") { // Explicitly check empty string too
+        const redirectUrl = new URL(request.url);
+        redirectUrl.pathname = "/pages/0/";
+        console.log(`Redirecting to ${redirectUrl.href}`);
+        return Response.redirect(redirectUrl.href, 302);
     }
 
-    // cache
+    let response;
+
+    // 2. Route based on path
     if (pathname.startsWith("/p/")) {
-        console.log("await insertTwitterCard")
-        resp = await insertTwitterCard(env, request, pathname);
+        console.log("Routing to: insertTwitterCard");
+        response = await insertTwitterCard(request, env, ctx, pathname);
     } else if (pathname.startsWith("/query/") || pathname.startsWith("/graphql/query/")) {
-        console.log("await cacheGqQuery")
-        resp = await cacheGqQuery(env, request, pathname);
+        console.log("Routing to: cacheGqQuery");
+        response = await cacheGqQuery(request, env, ctx, pathname);
     } else {
-        console.log(`await generalCache for ${pathname}`)
-        // resp = await fetch(request);
-        resp = await generalCache(env, request, pathname);
+        console.log(`Routing to: generalCache for ${pathname}`);
+        response = await generalCache(request, env, ctx, pathname);
     }
 
-    return resp;
+    return response;
 }
 
 /**
@@ -77,32 +80,40 @@ async function handleRequest(env, request) {
  * @returns {Boolean}
  */
 function isCacheEnable(request, cachePost = false) {
-    console.log("method", request.method);
+    const url = new URL(request.url);
+    const cacheControl = request.headers.get("Cache-Control") || "";
 
-    // disable cache if force query param is set
-    if ((new URL(request.url)).searchParams.get("force") != null) {
+    // Disable cache if force query param is set
+    if (url.searchParams.get("force") !== null) {
+        console.log("Cache disabled: 'force' query parameter present.");
         return false;
     }
 
-    // if disable cache in headers
-    if (request.headers.get("Cache-Control") == "no-cache"
-        || request.headers.get("Cache-Control") == "max-age=0"
-        || request.headers.get("Pragma") == "no-cache") {
+    // Disable cache based on headers (more robust check)
+    if (
+        request.headers.get("Pragma") === "no-cache" ||
+        cacheControl.includes("no-cache") ||
+        cacheControl.includes("no-store") ||
+        cacheControl.includes("max-age=0")
+    ) {
+        console.log(`Cache disabled: Header Pragma or Cache-Control (${cacheControl})`);
         return false;
     }
 
+    // Enable based on method
     switch (request.method) {
         case "GET":
             return true;
         case "POST":
             return cachePost;
         default:
+            console.log(`Cache disabled: Method ${request.method} not GET/POST.`);
             return false;
     }
 }
 
 // cache anything
-async function generalCache(env, request, pathname) {
+async function generalCache(request, env, ctx, pathname) {
     console.log(`generalCache for ${request.url}`);
 
     const cacheKey = `general:${request.method}:${request.url}`;
@@ -135,15 +146,16 @@ async function generalCache(env, request, pathname) {
     let headers = headersToArray(resp.headers);
     headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
 
-    await cacheSet(env, cacheKey, {
+    // Use ctx.waitUntil for caching operation
+    ctx.waitUntil(cacheSet(env, cacheKey, {
         headers: headers,
         body: respBody
-    });
+    }));
 
     console.log(`return from origin`);
     return new Response(respBody, {
         headers: resp.headers,
-    });
+    });z
 }
 
 // function cloneRequestWithoutBody(request) {
@@ -167,74 +179,102 @@ async function generalCache(env, request, pathname) {
 
 
 // insert twitter card into post page's html head
-async function insertTwitterCard(env, request, pathname) {
-    console.log("insertTwitterCard for " + pathname);
+async function insertTwitterCard(request, env, ctx, pathname) {
+    const cacheKey = `post:${request.method}:${pathname}`; // Pathname should be specific enough
+    console.log(`InsertTwitterCard: Key=${cacheKey}`);
 
-    // load from cache
-    let bypassCacheReason = "disabled";
-    const cacheKey = `post:${request.method}:${pathname}`;
-    if (isCacheEnable(request, true)) {
+    if (isCacheEnable(request, true)) { // Allow POST caching if needed? Usually GET for posts.
         const cached = await cacheGet(env, cacheKey);
-        if (cached != null && typeof cached === "object") {
-            console.log(`hit cache for ${cacheKey}`);
-            // console.log(`cached headers: ${cached.headers}`);
-            // console.log(`cached body: ${cached.body}`);
+        if (cached && typeof cached === "object" && cached.body !== null) {
+            console.log(`InsertTwitterCard: HIT ${cacheKey}`);
             return new Response(cached.body, {
+                status: cached.status || 200,
                 headers: headersFromArray(cached.headers)
             });
         }
-
-        bypassCacheReason = "cache-miss";
+        console.log(`InsertTwitterCard: MISS ${cacheKey}`);
+    } else {
+        console.log(`InsertTwitterCard: BYPASS ${cacheKey}`);
     }
-    console.log(`bypass cache for ${bypassCacheReason}`);
 
+    // --- Fetch Original Page ---
     const pageResp = await fetch(request);
-    if (pageResp.status != 200) {
-        console.warn(`failed to fetch request ${request.url}, got ${pageResp.status}`);
+
+    if (!pageResp.ok) {
+        console.warn(`InsertTwitterCard: Failed to fetch page ${request.url}, status: ${pageResp.status}`);
+        return pageResp; // Return origin error response
+    }
+
+    // Clone response to allow reading body and returning original headers/status
+    const pageRespClone = pageResp.clone();
+    let html = await pageRespClone.text(); // Read body from clone
+
+    // --- Fetch Twitter Card Data ---
+    const postNameMatch = /\/p\/([^/?#]+)/.exec(pathname); // Simpler regex, check match
+    if (!postNameMatch || !postNameMatch[1]) {
+        console.error(`InsertTwitterCard: Could not extract post name from pathname: ${pathname}`);
+        // Return original page content without modification if name extraction fails
         return pageResp;
     }
-    let html = await pageResp.text();
+    const postName = postNameMatch[1];
 
-    // load twitter card
-    const postName = /\/p\/([^/?#]+)\/?[?#]?/.exec(pathname)[1];
+    console.log(`InsertTwitterCard: Fetching Twitter card for post: ${postName}`);
     const queryBody = JSON.stringify({
         operationName: "blog",
-        query: 'query blog {BlogTwitterCard(name: "' + postName + '")}',
+        query: `query blog { BlogTwitterCard(name: "${postName}") }`, // Use template literal
         variables: {}
     });
-    const cardResp = await fetch(GraphqlAPI, {
-        method: "POST",
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: queryBody
-    });
-    if (cardResp.status != 200) {
-        console.warn(`failed to fetch twitter card ${cardResp.status}`);
-        return await fetch(request);
-    }
 
+    let twitterCard = '';
     try {
-        const twitterCard = (await cardResp.json())['data']['BlogTwitterCard'];
-        if (twitterCard) {
-            console.debug("got twitter card: " + twitterCard);
-            html = html.replace(/<\/head>/, twitterCard + '</head>');
+        const cardResp = await fetch(GraphqlAPI, {
+            method: "POST",
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: queryBody
+        });
+
+        if (cardResp.ok) {
+            const cardJson = await cardResp.json();
+            // Safely access nested data
+            twitterCard = cardJson?.data?.BlogTwitterCard || '';
+            if (twitterCard) {
+                console.log(`InsertTwitterCard: Successfully fetched Twitter card for ${postName}.`);
+            } else {
+                console.log(`InsertTwitterCard: Twitter card data empty or not found for ${postName}.`);
+            }
+        } else {
+            // Log error but don't fail the whole request, just skip injection
+            console.warn(`InsertTwitterCard: Failed to fetch Twitter card (${cardResp.status}) for ${postName}. Response: ${await cardResp.text()}`);
         }
     } catch (e) {
-        console.error(e);
+        console.error(`InsertTwitterCard: Error fetching or parsing Twitter card for ${postName}:`, e);
+        // Continue without the card on error
     }
 
-    let headers = headersToArray(pageResp.headers);
+    // --- Inject Card and Cache ---
+    if (twitterCard) {
+        // More robust replacement (case-insensitive)
+        html = html.replace(/<\/head>/i, twitterCard + '</head>');
+        console.log(`InsertTwitterCard: Injected Twitter card for ${postName}.`);
+    }
+
+    const headers = headersToArray(pageResp.headers); // Use original headers
+    headers.push(["X-Laisky-Cf-Cache", "SAVED"]);
     headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
 
-    // set cache
-    await cacheSet(env, cacheKey, {
+    // Cache the (potentially modified) HTML
+    ctx.waitUntil(cacheSet(env, cacheKey, {
+        body: html,
         headers: headers,
-        body: html
-    });
+        status: pageResp.status // Cache original status
+    }));
 
+    console.log(`InsertTwitterCard: Storing ${cacheKey} in cache.`);
+    // Return the new response with modified HTML but original status/headers
+    // Use headersFromArray to reconstruct headers for the final response
     return new Response(html, {
-        headers: pageResp.headers,
+        status: pageResp.status,
+        headers: headersFromArray(headers) // Send the headers we just prepared for cache
     });
 }
 
@@ -247,91 +287,134 @@ async function insertTwitterCard(env, request, pathname) {
  * @returns {String} return a string reason if deny, otherwise return null
  */
 function denyGQ(reqBody) {
-    if (reqBody.variables && reqBody.variables.type == "pateo") {
-        return "do not cache pateo alert";
+    // Use optional chaining for safer access
+    if (reqBody?.variables?.type === "pateo") {
+        return "Denied: Pateo alert type is blocked.";
     }
-
-    return null;
+    return null; // Denied reason is null if allowed
 }
 
 // load and cache graphql read-only query
-async function cacheGqQuery(env, request, pathname) {
-    console.log("cacheGqQuery for " + request.url)
+async function cacheGqQuery(request, env, ctx, pathname) {
+    console.log(`CacheGqQuery: URL=${request.url} Method=${request.method}`);
 
-    let url = new URL(request.url);
-
-    if (request.method != "GET" && request.method != "POST") {
-        console.log("bypass non-GET/POST graphql request")
-        return await fetch(request);
-    }
-
+    const url = new URL(request.url);
     let reqData;
-    if (request.method == "GET") {
+    let originRequest = request; // Keep track of the request to send to origin
+
+    // 1. Prepare Request Data and Origin Request
+    if (request.method === "GET") {
         reqData = {
-            "query": url.searchParams.get("query"),
-            "variables": url.searchParams.get("variables")
+            query: url.searchParams.get("query"),
+            variables: url.searchParams.get("variables") // Might need JSON.parse if variables are complex objects
+        };
+        // GET requests are inherently safe, body is null
+    } else if (request.method === "POST") {
+        try {
+            // Clone request first to preserve original for potential retries/logging
+            const reqClone = request.clone();
+            reqData = await reqClone.json(); // Read body from clone
+
+            // FIX: Create the request to be sent to the origin *with* the body
+            originRequest = new Request(request.url, {
+                method: "POST",
+                headers: request.headers,
+                body: JSON.stringify(reqData) // Use the read data
+            });
+
+        } catch (e) {
+            console.error("CacheGqQuery: Failed to parse request JSON body:", e);
+            return new Response("Invalid JSON body", { status: 400 });
+        }
+
+        // Check if request should be denied
+        const denyReason = denyGQ(reqData);
+        if (denyReason) {
+            console.warn(`CacheGqQuery: Denied - ${denyReason}`);
+            // Return a 403 Forbidden instead of 500
+            return new Response(denyReason, { status: 403 });
         }
     } else {
-        // read and copy request body
-        reqData = await request.json();
-        request = new Request(request.url, {
-            method: request.method,
-            headers: request.headers,
-            body: JSON.stringify(reqData)
-        });
-
-        const denyReason = denyGQ(reqData)
-        if (denyReason) {
-            throw new Error(denyReason);
-        }
+        console.log(`CacheGqQuery: Bypass method ${request.method}.`);
+        return fetch(request); // Pass through unsupported methods
     }
 
-    console.log("gquery: " + reqData['query']);
-    if (!reqData['query'].match(/^(query)?[ \w]*\{/)) {
-        console.log("bypass mutation graphql request")
-        return await fetch(request);
+    // 2. Basic Query/Mutation Check (Heuristic)
+    // Trim whitespace before checking for 'query' or '{'
+    const queryStr = reqData?.query?.trim() || '';
+    if (!queryStr || !(queryStr.startsWith('query') || queryStr.startsWith('{'))) {
+        console.log("CacheGqQuery: Bypass non-query request (heuristic).");
+        // Forward the potentially modified originRequest (for POST)
+        return fetch(originRequest);
     }
+    console.log("CacheGqQuery: Processing as query.");
 
-    const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`;
+    // 3. Cache Check
+    const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`; // Key includes method, path, and full query data
+    console.log(`CacheGqQuery: Key=${cacheKey}`);
 
-    // load from cache
-    let bypassCacheReason = "disabled";
-    if (isCacheEnable(request, true)) {
+    if (isCacheEnable(request, true)) { // Enable POST caching for queries
         const cached = await cacheGet(env, cacheKey);
-        bypassCacheReason = "cache-miss";
-        if (cached != null) {
-            console.log(`cache hit for ${cacheKey} with headers ${cached.headers}`);
+        if (cached && typeof cached === "object" && cached.body !== null) {
+            console.log(`CacheGqQuery: HIT ${cacheKey}`);
+            // Assume cached data includes status
             return new Response(cached.body, {
+                status: cached.status || 200,
                 headers: headersFromArray(cached.headers)
             });
         }
-    }
-    console.log(`bypass graphql cache for ${bypassCacheReason}`);
-
-    const resp = await fetch(request);
-    if (resp.status != 200) {
-        console.warn(`failed to fetch ${resp.status}`);
-        return resp;
+        console.log(`CacheGqQuery: MISS ${cacheKey}`);
+    } else {
+        console.log(`CacheGqQuery: BYPASS ${cacheKey}`);
     }
 
-    const respBody = await resp.json();
-    if (respBody.errors != null) {
-        console.warn(`resp error: ${JSON.stringify(respBody.errors)}`);
-        throw new Response(JSON.stringify(respBody), {
-            headers: resp.headers,
+    // 4. Fetch from Origin GraphQL Server
+    // FIX: Use the originRequest which has the correct body for POST
+    console.log(`CacheGqQuery: Fetching origin ${originRequest.url}`);
+    const originResponse = await fetch(originRequest);
+
+    // 5. Process Origin Response
+    if (!originResponse.ok) {
+        console.warn(`CacheGqQuery: Origin fetch failed (${originResponse.status}) for ${originRequest.url}.`);
+        return originResponse; // Return origin error response
+    }
+
+    // Clone to read body for checks/caching and return original response stream
+    const originResponseClone = originResponse.clone();
+
+    let respBodyJson;
+    try {
+        respBodyJson = await originResponseClone.json(); // Read body from clone
+    } catch (e) {
+        console.error("CacheGqQuery: Failed to parse origin JSON response:", e);
+        // Return the original response even if JSON parsing failed client-side
+        return originResponse;
+    }
+
+    // Check for GraphQL errors *within* the response payload
+    if (respBodyJson.errors) {
+        console.warn(`CacheGqQuery: Origin response contains GraphQL errors: ${JSON.stringify(respBodyJson.errors)}`);
+        // FIX: Return the response containing the errors, don't throw or cache
+        return new Response(JSON.stringify(respBodyJson), {
+            status: originResponse.status, // Keep original status (usually 200 even with errors)
+            headers: originResponse.headers
         });
     }
 
-    let headers = headersToArray(resp.headers);
+    // 6. Cache Successful Response
+    console.log(`CacheGqQuery: Storing ${cacheKey} in cache.`);
+    const respBodyString = JSON.stringify(respBodyJson); // Stringify the parsed JSON
+    const headers = headersToArray(originResponse.headers);
+    headers.push(["X-Laisky-Cf-Cache", "SAVED"]);
     headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
 
-    console.log("save graphql query respons to cache")
-    await cacheSet(env, cacheKey, {
+    // Cache asynchronously
+    ctx.waitUntil(cacheSet(env, cacheKey, {
+        body: respBodyString,
         headers: headers,
-        body: JSON.stringify(respBody)
-    });
+        status: originResponse.status // Cache the status
+    }));
 
-    return new Response(JSON.stringify(respBody), {
-        headers: resp.headers
-    });
+    // Return the original response (stream preserved)
+    return originResponse;
 }
