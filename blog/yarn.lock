@@ -408,10 +408,10 @@
     "@jridgewell/resolve-uri" "^3.0.3"
     "@jridgewell/sourcemap-codec" "^1.4.10"
 
-"@laisky/cf-utils@^0.0.7":
-  version "0.0.7"
-  resolved "https://registry.yarnpkg.com/@laisky/cf-utils/-/cf-utils-0.0.7.tgz#5d526f29af4d3d58575f742fc6395eeb722b53d0"
-  integrity sha512-SBXnC6PaZdLssiMcj9Dm/jxFhMG0XBQC3UlpaDOe15LAmL6HEklQ1QEu54TsTyyiNDqa8ybpEipL9xiUpMphXw==
+"@laisky/cf-utils@^0.0.12":
+  version "0.0.12"
+  resolved "https://registry.yarnpkg.com/@laisky/cf-utils/-/cf-utils-0.0.12.tgz#ce6f65d61557e8c709217d943713a6d66db1a788"
+  integrity sha512-wD1Lb7HN5OgB/qdmpXZb2Hb8rVAtBr376F7GMdixdaXyUlOSdBd4tcCeM/1D7UuxXFwAvxLgqUYjgDqyafSaTA==
   dependencies:
     js-sha256 "^0.11.0"
 

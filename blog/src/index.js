@@ -5,7 +5,8 @@ import {
     cacheGet,
     headersFromArray,
     headersToArray,
-    setDefaultCachePrefix
+    setDefaultCachePrefix,
+    sendErrorAlert
 } from '@laisky/cf-utils';
 
 
@@ -28,12 +29,18 @@ const GraphqlAPI = "https://gq.laisky.com/query/";
 export default {
     async fetch(request, env, ctx) { // Add ctx for waitUntil
         try {
-            // Use ctx.waitUntil for operations that shouldn't block the response (like caching)
             return await handleRequest(request, env, ctx);
         } catch (e) {
             console.error(`Error handling request: ${request.url}`, e.stack);
+
+            // Send error alert asynchronously
+            ctx.waitUntil(sendErrorAlert(env,
+                "laisky-blog",
+                `${e.message}`,
+                e.stack));
+
             // Provide a generic error message to the client
-            return new Response("Internal Server Error", {
+            return new Response(`Internal Server Error: ${e.message}`, {
                 status: 500
             });
         }
@@ -155,7 +162,7 @@ async function generalCache(request, env, ctx, pathname) {
     console.log(`return from origin`);
     return new Response(respBody, {
         headers: resp.headers,
-    });z
+    }); z
 }
 
 // function cloneRequestWithoutBody(request) {

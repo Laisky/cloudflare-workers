@@ -1,6 +1,6 @@
 {
   "name": "@laisky/cf-utils",
-  "version": "0.0.7",
+  "version": "0.0.12",
   "description": "useful utilities for cloudflare worker",
   "main": "index.js",
   "scripts": {

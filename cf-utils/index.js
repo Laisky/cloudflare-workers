@@ -2,20 +2,10 @@
 
 import { sha256 } from 'js-sha256';
 
-const DefaultCacheTTLSec = 3600 * 24 * 7;  // 7day
+const DefaultCacheTTLSec = 3600 * 24 * 1;  // 1day
 let _cachePrefix = "cache/";
 
-/**
- * setDefaultCachePrefix set default cache prefix
- * @param {string} prefix
- * @returns
- */
 export const setDefaultCachePrefix = (prefix) => {
-    // add tailing slash
-    if (!prefix.endsWith("/")) {
-        prefix += "/";
-    }
-
     _cachePrefix = prefix;
 }
 
@@ -86,12 +76,6 @@ export const cacheGet = async (env, key) => {
     return results.find((v) => v != null) || null;
 }
 
-/**
- * cacheDel delete cache with key
- *
- * @param {string} key
- * @returns
- */
 export const kvGet = async (env, key) => {
     console.log('try to get kv ' + key);
     try {
@@ -108,14 +92,6 @@ export const kvGet = async (env, key) => {
     }
 }
 
-/**
- * set value to kv
- *
- * @param {string} key
- * @param {any} val
- * @param {number} ttl - seconds to expire
- * @returns
- */
 export const kvSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
     console.log(`try to set kv ${key}`);
 
@@ -165,7 +141,7 @@ export const bucketGet = async (env, key) => {
  *
  * @param {string} key
  * @param {any} val
- * @param {number} ttl - seconds to expire
+ * @param {number} ttl
  * @returns
  */
 export const bucketSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
@@ -213,4 +189,58 @@ export const arrayBufferFromBase64 = (base64) => {
         bytes[i] = binary_string.charCodeAt(i);
     }
     return bytes.buffer;
+}
+
+const GraphqlAPI = "https://gq.laisky.com/query/";
+
+/**
+ * Send error alert to monitoring system via GraphQL
+ *
+ * @param {Object} env - Environment variables
+ * @param {String} message - Short error message
+ * @param {String} details - Detailed error information (stack trace)
+ */
+export const sendErrorAlert = async (env, title, message, details = "") => {
+    try {
+        const alertMessage = `CF Worker: ${title} got error:\n${message}\n\nDetails: ${details}`;
+
+        const mutation = `
+            mutation alert {
+                TelegramMonitorAlert(
+                    type: "laisky"
+                    token: "${env.ALERT_TOKEN}"
+                    msg: ${JSON.stringify(alertMessage)}
+                ) {
+                    id
+                }
+            }`;
+
+        console.log(`Sending alert: ${message}`);
+
+        const response = await fetch(GraphqlAPI, {
+            method: "POST",
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                query: mutation
+            })
+        });
+
+        if (!response.ok) {
+            console.error(`Failed to send alert: HTTP ${response.status}`);
+            return;
+        }
+
+        const result = await response.json();
+        if (result.errors) {
+            console.error(`Alert API returned errors: ${JSON.stringify(result.errors)}`);
+        } else {
+            console.log(`Alert sent successfully, ID: ${result.data?.TelegramMonitorAlert?.id || 'unknown'}`);
+        }
+    } catch (alertError) {
+        // Avoid infinite loops with alert errors
+        console.error(`Error sending alert: ${alertError.message}`);
+    }
 }

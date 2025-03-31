@@ -6,6 +6,6 @@
     "wrangler": "^4.6.0"
   },
   "dependencies": {
-    "@laisky/cf-utils": "^0.0.7"
+    "@laisky/cf-utils": "^0.0.12"
   }
 }
