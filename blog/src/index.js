@@ -89,6 +89,7 @@ async function handleRequest(request, env, ctx) {
 function isCacheEnable(request, cachePost = false) {
     const url = new URL(request.url);
     const cacheControl = request.headers.get("Cache-Control") || "";
+    const requestContentType = request.headers.get("Accept") || "";
 
     // Disable cache if force query param is set
     if (url.searchParams.get("force") !== null) {
@@ -104,6 +105,12 @@ function isCacheEnable(request, cachePost = false) {
         cacheControl.includes("max-age=0")
     ) {
         console.log(`Cache disabled: Header Pragma or Cache-Control (${cacheControl})`);
+        return false;
+    }
+
+    // Disable cache for text/html content types
+    if (requestContentType.includes("text/html")) {
+        console.log("Cache disabled: HTML content type detected");
         return false;
     }
 
