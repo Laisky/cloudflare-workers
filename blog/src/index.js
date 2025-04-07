@@ -126,50 +126,70 @@ function isCacheEnable(request, cachePost = false) {
     }
 }
 
-// cache anything
+/**
+ * generalCache cache for everything else
+ */
 async function generalCache(request, env, ctx, pathname) {
     console.log(`generalCache for ${request.url}`);
 
     const cacheKey = `general:${request.method}:${request.url}`;
-    console.log(`cacheKey: ${cacheKey}`);
+    let response;
 
-    // load from cache
     let bypassCacheReason = "disabled";
-    if (isCacheEnable(request, false)) {
-        const cached = await cacheGet(env, cacheKey);
-        bypassCacheReason = "cache-miss";
-        if (cached != null) {
-            console.log(`hit cache`);
-            return new Response(cached.body, {
-                headers: headersFromArray(cached.headers)
-            });
+    try {
+        // Attempt to get from cache first
+        if (isCacheEnable(request, false)) {
+            bypassCacheReason = "cache-miss";
+            const cached = await cacheGet(env, cacheKey);
+            if (cached != null) {
+                console.log(`Cache hit for ${cacheKey}`);
+                return new Response(cached.body, {
+                    headers: headersFromArray(cached.headers)
+                });
+            }
         }
+
+        console.log(`bypass cache for ${cacheKey}: ${bypassCacheReason}`);
+        response = await fetch(request);
+
+        if (!response.ok) {
+            console.warn(`Origin request failed with status ${response.status}`);
+            return response;
+        }
+
+        // Clone the response before reading
+        const clonedResponse = response.clone();
+        const respBody = await clonedResponse.text();
+
+        // Only cache successful responses
+        if (response.status === 200) {
+            let headers = headersToArray(response.headers);
+            headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+
+            // Attempt to cache but don't block the response
+            ctx.waitUntil(cacheSet(env, cacheKey, {
+                headers: headers,
+                body: respBody
+            }).catch(err => {
+                console.error(`Cache write failed for ${cacheKey}:`, err);
+            }));
+        }
+
+        return new Response(respBody, {
+            status: response.status,
+            headers: response.headers,
+        });
+    } catch (error) {
+        console.error(`Error in generalCache for ${cacheKey}:`, error);
+
+        // If we have a response from origin, return it even if caching failed
+        if (response) {
+            return response;
+        }
+
+        // Last resort - fetch again without caching
+        return fetch(request);
     }
-    console.log(`bypass cache for ${bypassCacheReason}`);
-
-    // direct request origin site (bypass CDN)
-    const resp = await fetch(request);
-    if (resp.status !== 200) {
-        console.warn(`failed to directly fetch ${resp.status}`);
-        return resp;
-    }
-
-    console.log(`save to cache`)
-    const respBody = await resp.text();
-
-    let headers = headersToArray(resp.headers);
-    headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
-
-    // Use ctx.waitUntil for caching operation
-    ctx.waitUntil(cacheSet(env, cacheKey, {
-        headers: headers,
-        body: respBody
-    }));
-
-    console.log(`return from origin`);
-    return new Response(respBody, {
-        headers: resp.headers,
-    }); z
 }
 
 // function cloneRequestWithoutBody(request) {

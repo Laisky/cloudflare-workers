@@ -52,12 +52,30 @@ export const headersFromArray = (hs) => {
  * @returns
  */
 export const cacheSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
-    console.log(`try to set cache key=${key}, val=${val}, ttl=${ttl}`);
     const cacheKey = `${_cachePrefix}${sha256(key)}`;
-    await Promise.all([
-        kvSet(env, cacheKey, val, ttl),
-        bucketSet(env, cacheKey, val, ttl)
-    ]);
+    console.log(`Setting cache for key=${cacheKey}, ttl=${ttl}`);
+
+    try {
+        // Attempt to write to both storage systems
+        const [kvResult, bucketResult] = await Promise.allSettled([
+            kvSet(env, cacheKey, val, ttl),
+            bucketSet(env, cacheKey, val, ttl)
+        ]);
+
+        // Log any failures but don't throw
+        if (kvResult.status === 'rejected') {
+            console.warn('KV cache write failed:', kvResult.reason);
+        }
+        if (bucketResult.status === 'rejected') {
+            console.warn('Bucket cache write failed:', bucketResult.reason);
+        }
+
+        // Consider the operation successful if at least one storage system worked
+        return kvResult.status === 'fulfilled' || bucketResult.status === 'fulfilled';
+    } catch (e) {
+        console.error(`Cache set error for ${cacheKey}:`, e);
+        return false;
+    }
 }
 
 /**
@@ -68,12 +86,29 @@ export const cacheSet = async (env, key, val, ttl = DefaultCacheTTLSec) => {
  */
 export const cacheGet = async (env, key) => {
     const cacheKey = `${_cachePrefix}${sha256(key)}`;
-    const results = await Promise.all([
-        kvGet(env, cacheKey),
-        bucketGet(env, cacheKey)
-    ]);
 
-    return results.find((v) => v != null) || null;
+    try {
+        // Run both KV and bucket get operations in parallel
+        const [kvResult, bucketResult] = await Promise.allSettled([
+            kvGet(env, cacheKey),
+            bucketGet(env, cacheKey)
+        ]);
+
+        // Check KV result
+        if (kvResult.status === 'fulfilled' && kvResult.value !== null) {
+            return kvResult.value;
+        }
+
+        // Fallback to bucket result
+        if (bucketResult.status === 'fulfilled' && bucketResult.value !== null) {
+            return bucketResult.value;
+        }
+
+        return null;
+    } catch (e) {
+        console.error(`Cache get error for ${cacheKey}:`, e);
+        return null;
+    }
 }
 
 export const kvGet = async (env, key) => {
