@@ -1,13 +1,16 @@
 'use strict';
 
 import {
-    cacheSet,
     cacheGet,
+    kvGet,
+    kvSet,
+    bucketSet,
     headersFromArray,
     headersToArray,
     setDefaultCachePrefix,
     sendErrorAlert
 } from '@laisky/cf-utils';
+import { sha256 } from 'js-sha256';
 
 
 /* cache for site page and GraphQL query
@@ -19,12 +22,51 @@ Listening on routes:
     * blog.laisky.com/pages/*
     * blog.laisky.com/graphql/query/*
     * gq.laisky.com/*
+
+Caching strategy (write-frequency reduction without lowering hit rate):
+
+  - SWR envelope: every cached value carries {staleAt, expiresAt, hash, delta}.
+    The physical store lives for HARD_TTL (long, keeps hit rate high); logical
+    freshness is the much shorter SOFT_TTL. Fresh hits serve with zero writes;
+    stale hits serve immediately and revalidate in the background.
+  - write-on-change-only: before any write we compare sha256(body) against the
+    stored hash. Identical content is never re-written (closes the text/html
+    write hole where browser navigations bypassed the READ but wrote on every
+    request). Unchanged-but-stale entries get a cheap KV-only freshness touch.
+  - split dual-write: real content changes write BOTH KV and R2; freshness
+    touches write KV ONLY, sparing the expensive R2 Class A PutObject.
+  - XFetch single-flight: revalidation is gated by probabilistic early
+    expiration so a post-expiry stampede collapses toward a single refresh.
+
+NOTE: keep the cache prefix stable. Bumping it cold-misses the whole cache and
+temporarily tanks hit rate, which is exactly what we are trying to avoid.
+
+Companion infra: set an R2 Object Lifecycle "Expiration" rule of HARD_TTL days
+on the prod and dev buckets so never-expiring R2 objects are reclaimed (the
+in-payload `expiration` check keeps reads correct during the sweep window).
 */
 
-// Using a more descriptive prefix might be helpful if versions change often
-setDefaultCachePrefix("blog-v2.25/"); // Increment version or use a date
+const CACHE_PREFIX = "blog-v2.25/"; // Increment version or use a date
+setDefaultCachePrefix(CACHE_PREFIX);
 
 const GraphqlAPI = "https://gq.laisky.com/query/";
+
+// --- caching tunables ---
+const HARD_TTL = 7 * 24 * 3600;     // physical lifetime of a cache entry (KV expirationTtl + R2 payload)
+const SOFT_TTL_HTML = 24 * 3600;    // logical freshness window for HTML pages
+const SOFT_TTL_GQL = 600;           // logical freshness window for GraphQL queries
+const BETA = 1.5;                   // XFetch aggressiveness (>=1; higher = refresh earlier)
+const DEFAULT_DELTA_MS = 200;       // assumed origin-fetch cost for legacy entries lacking `delta`
+const EXPIRY_MARGIN_MS = 60 * 1000; // force one refresh this long before physical expiry
+
+/**
+ * ck derives the physical cache key exactly as cf-utils cacheGet/cacheSet do,
+ * so the low-level kvGet/kvSet/bucketSet helpers address the same slot.
+ *
+ * @param {string} key - logical cache key
+ * @returns {string}
+ */
+const ck = (key) => `${CACHE_PREFIX}${sha256(key)}`;
 
 export default {
     async fetch(request, env, ctx) { // Add ctx for waitUntil
@@ -73,14 +115,18 @@ async function handleRequest(request, env, ctx) {
         response = await cacheGqQuery(request, env, ctx, pathname);
     } else {
         console.log(`Routing to: generalCache for ${pathname}`);
-        response = await generalCache(request, env, ctx, pathname);
+        response = await generalCache(request, env, ctx);
     }
 
     return response;
 }
 
 /**
- * isCacheEnable check whether to enable cache
+ * isCacheEnable check whether to enable cache READS for this request.
+ *
+ * Note: this gates the read path only. The write path is gated separately by
+ * writeIfChanged (content-hash compare), so a cache-disabled request still
+ * refreshes the stored copy when — and only when — the content actually changed.
  *
  * @param {Request} request - request object
  * @param {Boolean} cachePost - whether to enable cache for POST method
@@ -127,139 +173,296 @@ function isCacheEnable(request, cachePost = false) {
 }
 
 /**
+ * canonicalJson produces a stable, key-sorted serialization used only for
+ * content hashing, so backend field-order nondeterminism does not flip the
+ * change-detection hash. The stored body remains the real, unmodified payload.
+ *
+ * @param {any} v
+ * @returns {string}
+ */
+function canonicalJson(v) {
+    if (v === null || typeof v !== "object") {
+        return JSON.stringify(v);
+    }
+    if (Array.isArray(v)) {
+        return "[" + v.map(canonicalJson).join(",") + "]";
+    }
+    const keys = Object.keys(v).sort();
+    return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(v[k])).join(",") + "}";
+}
+
+/**
+ * shouldRevalidate decides — on EVERY hit, against the FUTURE soft deadline —
+ * whether this request should trigger a background revalidation.
+ *
+ * Uses XFetch (Vattani et al.) probabilistic early expiration: as `now`
+ * approaches `staleAt`, the chance that any single caller fires rises, so a
+ * post-expiry stampede collapses toward ~one refresh. A deterministic backstop
+ * forces exactly one refresh shortly before the physical expiry so a hot key
+ * never falls off HARD_TTL into a true cold miss.
+ *
+ * @param {Object} cached - the stored envelope
+ * @returns {Boolean}
+ */
+function shouldRevalidate(cached) {
+    const now = Date.now();
+    const staleAt = cached.staleAt || 0;       // legacy entry (no staleAt) -> treat as due
+    const expiresAt = cached.expiresAt || 0;
+    const delta = cached.delta || DEFAULT_DELTA_MS;
+
+    // Deterministic backstop: refresh once before physical expiry.
+    if (expiresAt && now >= expiresAt - EXPIRY_MARGIN_MS) {
+        return true;
+    }
+
+    // XFetch probabilistic early refresh. -ln(rand) in (0, inf); avoid rand==0.
+    const rand = Math.random() || Number.MIN_VALUE;
+    return (now - delta * BETA * Math.log(rand)) >= staleAt;
+}
+
+/**
+ * serveFromCache builds the client response from a stored envelope and tags it
+ * with the freshness state for observability.
+ *
+ * @param {Object} cached - stored envelope
+ * @param {Boolean} isStale
+ * @returns {Response}
+ */
+function serveFromCache(cached, isStale) {
+    const headers = headersFromArray(cached.headers);
+    headers.set("X-Laisky-Cf-Cache-Status", isStale ? "STALE" : "FRESH");
+    return new Response(cached.body, {
+        status: cached.status || 200,
+        headers: headers
+    });
+}
+
+/**
+ * freshResponse builds a client response for a live (origin) body and tags its
+ * cache status (MISS for a real cache miss, BYPASS for a cache-disabled read).
+ *
+ * @param {Object} produced - producer result
+ * @param {Headers|Array} headersSource - Headers (origin) or array (stored form)
+ * @param {string} cacheStatus
+ * @returns {Response}
+ */
+function freshResponse(produced, headersSource, cacheStatus) {
+    const headers = headersSource instanceof Headers
+        ? new Headers(headersSource)
+        : headersFromArray(headersSource);
+    headers.set("X-Laisky-Cf-Cache-Status", cacheStatus);
+    return new Response(produced.body, {
+        status: produced.status,
+        headers: headers
+    });
+}
+
+/**
+ * writeIfChanged is the single write gate for every cache path. It writes only
+ * when the content actually changed; an unchanged-but-stale entry gets a cheap
+ * KV-only freshness touch, and an unchanged-and-fresh entry is left untouched.
+ *
+ * Returns a promise the caller should pass to ctx.waitUntil (no nested
+ * waitUntil, so it also composes inside background revalidation).
+ *
+ * @param {Object} env
+ * @param {string} key - logical cache key
+ * @param {Object} produced - {body, status, storeHeaders, deltaMs, hashInput?}
+ * @param {Object} opts - {softTtl, prior} where prior is the existing envelope or null
+ * @returns {Promise<void>}
+ */
+async function writeIfChanged(env, key, produced, { softTtl, prior }) {
+    const now = Date.now();
+    const hash = sha256(produced.hashInput != null ? produced.hashInput : produced.body);
+
+    if (prior && prior.hash === hash) {
+        if (!prior.staleAt || now < prior.staleAt) {
+            // Unchanged and still fresh: write nothing at all.
+            console.log(`Cache unchanged+fresh, skip write: ${key}`);
+            return;
+        }
+        // Unchanged but stale: KV-only freshness touch, skip the R2 PutObject.
+        console.log(`Cache unchanged, KV-only staleAt touch: ${key}`);
+        await kvSet(env, ck(key), { ...prior, staleAt: now + softTtl * 1000 }, HARD_TTL);
+        return;
+    }
+
+    // Absent or genuinely changed: full dual write with the long physical TTL.
+    console.log(`Cache write (changed/new): ${key}`);
+    const envelope = {
+        body: produced.body,
+        headers: produced.storeHeaders,
+        status: produced.status,
+        hash: hash,
+        delta: produced.deltaMs || DEFAULT_DELTA_MS,
+        staleAt: now + softTtl * 1000,
+        expiresAt: now + HARD_TTL * 1000
+    };
+    await Promise.allSettled([
+        kvSet(env, ck(key), envelope, HARD_TTL),
+        bucketSet(env, ck(key), envelope, HARD_TTL)
+    ]);
+}
+
+/**
  * generalCache cache for everything else
  */
-async function generalCache(request, env, ctx, pathname) {
+async function generalCache(request, env, ctx) {
     console.log(`generalCache for ${request.url}`);
 
     const cacheKey = `general:${request.method}:${request.url}`;
-    let response;
+    let didRead = false;
+    let cached = null;
 
-    let bypassCacheReason = "disabled";
     try {
-        // Attempt to get from cache first
+        // 1. Read-through (skipped when cache is disabled for this request).
         if (isCacheEnable(request, false)) {
-            bypassCacheReason = "cache-miss";
-            const cached = await cacheGet(env, cacheKey);
+            didRead = true;
+            cached = await cacheGet(env, cacheKey);
             if (cached != null) {
-                console.log(`Cache hit for ${cacheKey}`);
-                return new Response(cached.body, {
-                    headers: headersFromArray(cached.headers)
-                });
+                const isStale = !cached.staleAt || Date.now() >= cached.staleAt;
+                console.log(`generalCache ${isStale ? "STALE" : "FRESH"} hit for ${cacheKey}`);
+                if (shouldRevalidate(cached)) {
+                    ctx.waitUntil(revalidateGeneral(env, request, cacheKey, cached)
+                        .catch((err) => console.error(`generalCache revalidate failed for ${cacheKey}:`, err)));
+                }
+                return serveFromCache(cached, isStale);
             }
         }
 
-        console.log(`bypass cache for ${cacheKey}: ${bypassCacheReason}`);
-        response = await fetch(request);
-
-        if (!response.ok) {
-            console.warn(`Origin request failed with status ${response.status}`);
-            return response;
+        // 2. Miss or bypass: fetch origin and (conditionally) refresh the cache.
+        const produced = await produceGeneral(request, cacheKey);
+        if (!produced.ok) {
+            return produced.response;
         }
 
-        // Clone the response before reading
-        const clonedResponse = response.clone();
-        const respBody = await clonedResponse.text();
+        const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
+        ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior })
+            .catch((err) => console.error(`generalCache write failed for ${cacheKey}:`, err)));
 
-        // Only cache successful responses
-        if (response.status === 200) {
-            let headers = headersToArray(response.headers);
-            headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
-
-            // Attempt to cache but don't block the response
-            ctx.waitUntil(cacheSet(env, cacheKey, {
-                headers: headers,
-                body: respBody
-            }).catch(err => {
-                console.error(`Cache write failed for ${cacheKey}:`, err);
-            }));
-        }
-
-        return new Response(respBody, {
-            status: response.status,
-            headers: response.headers,
-        });
+        return freshResponse(produced, produced.originHeaders, didRead ? "MISS" : "BYPASS");
     } catch (error) {
         console.error(`Error in generalCache for ${cacheKey}:`, error);
-
-        // If we have a response from origin, return it even if caching failed
-        if (response) {
-            return response;
-        }
-
         // Last resort - fetch again without caching
         return fetch(request);
     }
 }
 
-// function cloneRequestWithoutBody(request) {
-//     let url = new URL(request.url);
-//     return new Request(url.href, {
-//         method: request.method,
-//         headers: request.headers,
-//         referrer: request.referrer
-//     });
-// }
+/**
+ * produceGeneral fetches the origin and packages the data needed both to serve
+ * the client and to (conditionally) write the cache. Used by the foreground
+ * miss path and the background revalidation path.
+ */
+async function produceGeneral(request, cacheKey) {
+    const start = Date.now();
+    const response = await fetch(request);
+    const deltaMs = Date.now() - start;
 
-// async function cloneRequestWithBody(request) {
-//     let url = new URL(request.url);
-//     return new Request(url.href, {
-//         method: request.method,
-//         headers: request.headers,
-//         referrer: request.referrer,
-//         body: (await request.blob())
-//     });
-// }
+    if (!response.ok || response.status !== 200) {
+        console.warn(`generalCache: origin status ${response.status}, not caching`);
+        return { ok: false, response: response };
+    }
+
+    const body = await response.clone().text();
+    const storeHeaders = headersToArray(response.headers);
+    storeHeaders.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+
+    return {
+        ok: true,
+        body: body,
+        status: response.status,
+        storeHeaders: storeHeaders,
+        originHeaders: response.headers,
+        deltaMs: deltaMs
+    };
+}
+
+async function revalidateGeneral(env, request, cacheKey, prior) {
+    const produced = await produceGeneral(request, cacheKey);
+    if (!produced.ok) {
+        return; // keep the existing entry on origin failure
+    }
+    await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior });
+}
 
 
 // insert twitter card into post page's html head
 async function insertTwitterCard(request, env, ctx, pathname) {
-    const cacheKey = `post:${request.method}:${pathname}`; // Pathname should be specific enough
+    const cacheKey = `post:${request.method}:${pathname}`;
     console.log(`InsertTwitterCard: Key=${cacheKey}`);
 
-    if (isCacheEnable(request, true)) { // Allow POST caching if needed? Usually GET for posts.
-        const cached = await cacheGet(env, cacheKey);
-        if (cached && typeof cached === "object" && cached.body !== null) {
-            console.log(`InsertTwitterCard: HIT ${cacheKey}`);
-            return new Response(cached.body, {
-                status: cached.status || 200,
-                headers: headersFromArray(cached.headers)
-            });
+    let didRead = false;
+    let cached = null;
+
+    // 1. Read-through.
+    if (isCacheEnable(request, true)) {
+        didRead = true;
+        cached = await cacheGet(env, cacheKey);
+        if (cached && typeof cached === "object" && cached.body != null) {
+            const isStale = !cached.staleAt || Date.now() >= cached.staleAt;
+            console.log(`InsertTwitterCard: ${isStale ? "STALE" : "FRESH"} HIT ${cacheKey}`);
+            if (shouldRevalidate(cached)) {
+                ctx.waitUntil(revalidatePost(env, request, pathname, cacheKey, cached)
+                    .catch((err) => console.error(`InsertTwitterCard revalidate failed for ${cacheKey}:`, err)));
+            }
+            return serveFromCache(cached, isStale);
         }
         console.log(`InsertTwitterCard: MISS ${cacheKey}`);
     } else {
         console.log(`InsertTwitterCard: BYPASS ${cacheKey}`);
     }
 
-    // --- Fetch Original Page ---
+    // 2. Miss or bypass: build the (card-injected) page.
+    const produced = await producePost(request, pathname, cacheKey);
+    if (!produced.ok) {
+        return produced.response; // origin error or unparsable path: serve unmodified, do not cache
+    }
+
+    // Don't clobber an existing good entry when the card fetch failed transiently.
+    const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
+    if (produced.cardFetchFailed && prior) {
+        console.warn(`InsertTwitterCard: card fetch failed, preserving cached entry ${cacheKey}`);
+    } else {
+        ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior })
+            .catch((err) => console.error(`InsertTwitterCard write failed for ${cacheKey}:`, err)));
+    }
+
+    return freshResponse(produced, produced.storeHeaders, didRead ? "MISS" : "BYPASS");
+}
+
+/**
+ * producePost fetches the post page and injects the Twitter card. Returns
+ * ok:false (with the raw response) when the page request fails or the post name
+ * cannot be extracted, so the caller serves the unmodified page without caching.
+ */
+async function producePost(request, pathname, cacheKey) {
+    const start = Date.now();
     const pageResp = await fetch(request);
+    const deltaMs = Date.now() - start;
 
     if (!pageResp.ok) {
         console.warn(`InsertTwitterCard: Failed to fetch page ${request.url}, status: ${pageResp.status}`);
-        return pageResp; // Return origin error response
+        return { ok: false, response: pageResp };
     }
 
-    // Clone response to allow reading body and returning original headers/status
-    const pageRespClone = pageResp.clone();
-    let html = await pageRespClone.text(); // Read body from clone
+    let html = await pageResp.clone().text();
 
-    // --- Fetch Twitter Card Data ---
-    const postNameMatch = /\/p\/([^/?#]+)/.exec(pathname); // Simpler regex, check match
+    const postNameMatch = /\/p\/([^/?#]+)/.exec(pathname);
     if (!postNameMatch || !postNameMatch[1]) {
         console.error(`InsertTwitterCard: Could not extract post name from pathname: ${pathname}`);
-        // Return original page content without modification if name extraction fails
-        return pageResp;
+        return { ok: false, response: pageResp };
     }
     const postName = postNameMatch[1];
 
     console.log(`InsertTwitterCard: Fetching Twitter card for post: ${postName}`);
     const queryBody = JSON.stringify({
         operationName: "blog",
-        query: `query blog { BlogTwitterCard(name: "${postName}") }`, // Use template literal
+        query: `query blog { BlogTwitterCard(name: "${postName}") }`,
         variables: {}
     });
 
     let twitterCard = '';
+    let cardFetchFailed = false;
     try {
         const cardResp = await fetch(GraphqlAPI, {
             method: "POST",
@@ -269,7 +472,6 @@ async function insertTwitterCard(request, env, ctx, pathname) {
 
         if (cardResp.ok) {
             const cardJson = await cardResp.json();
-            // Safely access nested data
             twitterCard = cardJson?.data?.BlogTwitterCard || '';
             if (twitterCard) {
                 console.log(`InsertTwitterCard: Successfully fetched Twitter card for ${postName}.`);
@@ -277,39 +479,45 @@ async function insertTwitterCard(request, env, ctx, pathname) {
                 console.log(`InsertTwitterCard: Twitter card data empty or not found for ${postName}.`);
             }
         } else {
-            // Log error but don't fail the whole request, just skip injection
-            console.warn(`InsertTwitterCard: Failed to fetch Twitter card (${cardResp.status}) for ${postName}. Response: ${await cardResp.text()}`);
+            // Transient failure: flag it so revalidation won't clobber a good entry.
+            cardFetchFailed = true;
+            console.warn(`InsertTwitterCard: Failed to fetch Twitter card (${cardResp.status}) for ${postName}.`);
         }
     } catch (e) {
+        cardFetchFailed = true;
         console.error(`InsertTwitterCard: Error fetching or parsing Twitter card for ${postName}:`, e);
-        // Continue without the card on error
     }
 
-    // --- Inject Card and Cache ---
     if (twitterCard) {
-        // More robust replacement (case-insensitive)
         html = html.replace(/<\/head>/i, twitterCard + '</head>');
         console.log(`InsertTwitterCard: Injected Twitter card for ${postName}.`);
     }
 
-    const headers = headersToArray(pageResp.headers); // Use original headers
-    headers.push(["X-Laisky-Cf-Cache", "SAVED"]);
-    headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+    const storeHeaders = headersToArray(pageResp.headers);
+    storeHeaders.push(["X-Laisky-Cf-Cache", "SAVED"]);
+    storeHeaders.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
 
-    // Cache the (potentially modified) HTML
-    ctx.waitUntil(cacheSet(env, cacheKey, {
+    return {
+        ok: true,
         body: html,
-        headers: headers,
-        status: pageResp.status // Cache original status
-    }));
-
-    console.log(`InsertTwitterCard: Storing ${cacheKey} in cache.`);
-    // Return the new response with modified HTML but original status/headers
-    // Use headersFromArray to reconstruct headers for the final response
-    return new Response(html, {
         status: pageResp.status,
-        headers: headersFromArray(headers) // Send the headers we just prepared for cache
-    });
+        storeHeaders: storeHeaders,
+        deltaMs: deltaMs,
+        cardFetchFailed: cardFetchFailed
+    };
+}
+
+async function revalidatePost(env, request, pathname, cacheKey, prior) {
+    const produced = await producePost(request, pathname, cacheKey);
+    if (!produced.ok) {
+        return;
+    }
+    if (produced.cardFetchFailed && prior) {
+        // A background refresh must never overwrite a good entry with card-less HTML.
+        console.warn(`InsertTwitterCard: revalidate card fetch failed, keeping ${cacheKey}`);
+        return;
+    }
+    await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior });
 }
 
 
@@ -328,127 +536,155 @@ function denyGQ(reqBody) {
     return null; // Denied reason is null if allowed
 }
 
+/**
+ * buildOriginRequest reconstructs the request to send to the origin GraphQL
+ * server. For POST it carries the parsed body so it can be (re)issued safely
+ * from a background revalidation without touching the original request stream.
+ */
+function buildOriginRequest(request, reqData) {
+    if (request.method === "POST") {
+        return new Request(request.url, {
+            method: "POST",
+            headers: request.headers,
+            body: JSON.stringify(reqData)
+        });
+    }
+    return request;
+}
+
 // load and cache graphql read-only query
 async function cacheGqQuery(request, env, ctx, pathname) {
     console.log(`CacheGqQuery: URL=${request.url} Method=${request.method}`);
 
     const url = new URL(request.url);
     let reqData;
-    let originRequest = request; // Keep track of the request to send to origin
 
-    // 1. Prepare Request Data and Origin Request
+    // 1. Prepare request data.
     if (request.method === "GET") {
         reqData = {
             query: url.searchParams.get("query"),
-            variables: url.searchParams.get("variables") // Might need JSON.parse if variables are complex objects
+            variables: url.searchParams.get("variables")
         };
-        // GET requests are inherently safe, body is null
     } else if (request.method === "POST") {
         try {
-            // Clone request first to preserve original for potential retries/logging
             const reqClone = request.clone();
-            reqData = await reqClone.json(); // Read body from clone
-
-            // FIX: Create the request to be sent to the origin *with* the body
-            originRequest = new Request(request.url, {
-                method: "POST",
-                headers: request.headers,
-                body: JSON.stringify(reqData) // Use the read data
-            });
-
+            reqData = await reqClone.json();
         } catch (e) {
             console.error("CacheGqQuery: Failed to parse request JSON body:", e);
             return new Response("Invalid JSON body", { status: 400 });
         }
 
-        // Check if request should be denied
         const denyReason = denyGQ(reqData);
         if (denyReason) {
             console.warn(`CacheGqQuery: Denied - ${denyReason}`);
-            // Return a 403 Forbidden instead of 500
             return new Response(denyReason, { status: 403 });
         }
     } else {
         console.log(`CacheGqQuery: Bypass method ${request.method}.`);
-        return fetch(request); // Pass through unsupported methods
+        return fetch(request);
     }
 
-    // 2. Basic Query/Mutation Check (Heuristic)
-    // Trim whitespace before checking for 'query' or '{'
+    // 2. Basic query/mutation heuristic.
     const queryStr = reqData?.query?.trim() || '';
     if (!queryStr || !(queryStr.startsWith('query') || queryStr.startsWith('{'))) {
         console.log("CacheGqQuery: Bypass non-query request (heuristic).");
-        // Forward the potentially modified originRequest (for POST)
-        return fetch(originRequest);
+        return fetch(buildOriginRequest(request, reqData));
     }
     console.log("CacheGqQuery: Processing as query.");
 
-    // 3. Cache Check
-    const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`; // Key includes method, path, and full query data
+    const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`;
     console.log(`CacheGqQuery: Key=${cacheKey}`);
 
-    if (isCacheEnable(request, true)) { // Enable POST caching for queries
-        const cached = await cacheGet(env, cacheKey);
-        if (cached && typeof cached === "object" && cached.body !== null) {
-            console.log(`CacheGqQuery: HIT ${cacheKey}`);
-            // Assume cached data includes status
-            return new Response(cached.body, {
-                status: cached.status || 200,
-                headers: headersFromArray(cached.headers)
-            });
+    let didRead = false;
+    let cached = null;
+
+    // 3. Read-through.
+    if (isCacheEnable(request, true)) {
+        didRead = true;
+        cached = await cacheGet(env, cacheKey);
+        if (cached && typeof cached === "object" && cached.body != null) {
+            const isStale = !cached.staleAt || Date.now() >= cached.staleAt;
+            console.log(`CacheGqQuery: ${isStale ? "STALE" : "FRESH"} HIT ${cacheKey}`);
+            if (shouldRevalidate(cached)) {
+                ctx.waitUntil(revalidateGql(env, request, reqData, cacheKey, cached)
+                    .catch((err) => console.error(`CacheGqQuery revalidate failed for ${cacheKey}:`, err)));
+            }
+            return serveFromCache(cached, isStale);
         }
         console.log(`CacheGqQuery: MISS ${cacheKey}`);
     } else {
         console.log(`CacheGqQuery: BYPASS ${cacheKey}`);
     }
 
-    // 4. Fetch from Origin GraphQL Server
-    // FIX: Use the originRequest which has the correct body for POST
-    console.log(`CacheGqQuery: Fetching origin ${originRequest.url}`);
-    const originResponse = await fetch(originRequest);
-
-    // 5. Process Origin Response
-    if (!originResponse.ok) {
-        console.warn(`CacheGqQuery: Origin fetch failed (${originResponse.status}) for ${originRequest.url}.`);
-        return originResponse; // Return origin error response
+    // 4. Miss or bypass: fetch origin and (conditionally) refresh the cache.
+    const originRequest = buildOriginRequest(request, reqData);
+    const produced = await produceGql(originRequest, cacheKey);
+    if (!produced.ok) {
+        return produced.response;
     }
 
-    // Clone to read body for checks/caching and return original response stream
-    const originResponseClone = originResponse.clone();
+    const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
+    ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_GQL, prior })
+        .catch((err) => console.error(`CacheGqQuery write failed for ${cacheKey}:`, err)));
+
+    return freshResponse(produced, produced.originHeaders, didRead ? "MISS" : "BYPASS");
+}
+
+/**
+ * produceGql fetches the origin GraphQL server. Returns ok:false (with a raw
+ * response) for transport errors, unparsable JSON, or GraphQL-level errors, so
+ * those payloads are served to the client but never cached.
+ */
+async function produceGql(originRequest, cacheKey) {
+    const start = Date.now();
+    const originResponse = await fetch(originRequest);
+    const deltaMs = Date.now() - start;
+
+    if (!originResponse.ok) {
+        console.warn(`CacheGqQuery: Origin fetch failed (${originResponse.status}) for ${originRequest.url}.`);
+        return { ok: false, response: originResponse };
+    }
 
     let respBodyJson;
     try {
-        respBodyJson = await originResponseClone.json(); // Read body from clone
+        respBodyJson = await originResponse.clone().json();
     } catch (e) {
         console.error("CacheGqQuery: Failed to parse origin JSON response:", e);
-        // Return the original response even if JSON parsing failed client-side
-        return originResponse;
+        return { ok: false, response: originResponse };
     }
 
-    // Check for GraphQL errors *within* the response payload
     if (respBodyJson.errors) {
         console.warn(`CacheGqQuery: Origin response contains GraphQL errors: ${JSON.stringify(respBodyJson.errors)}`);
-        // FIX: Return the response containing the errors, don't throw or cache
-        return new Response(JSON.stringify(respBodyJson), {
-            status: originResponse.status, // Keep original status (usually 200 even with errors)
-            headers: originResponse.headers
-        });
+        return {
+            ok: false,
+            response: new Response(JSON.stringify(respBodyJson), {
+                status: originResponse.status,
+                headers: originResponse.headers
+            })
+        };
     }
 
-    // 6. Cache Successful Response
-    console.log(`CacheGqQuery: Storing ${cacheKey} in cache.`);
-    const respBodyString = JSON.stringify(respBodyJson); // Stringify the parsed JSON
-    const headers = headersToArray(originResponse.headers);
-    headers.push(["X-Laisky-Cf-Cache", "SAVED"]);
-    headers.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
+    const body = JSON.stringify(respBodyJson);
+    const storeHeaders = headersToArray(originResponse.headers);
+    storeHeaders.push(["X-Laisky-Cf-Cache", "SAVED"]);
+    storeHeaders.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
 
-    // Cache asynchronously
-    ctx.waitUntil(cacheSet(env, cacheKey, {
-        body: respBodyString,
-        headers: headers,
-        status: originResponse.status // Cache the status
-    }));
+    return {
+        ok: true,
+        body: body,
+        status: originResponse.status,
+        storeHeaders: storeHeaders,
+        originHeaders: originResponse.headers,
+        deltaMs: deltaMs,
+        hashInput: canonicalJson(respBodyJson) // hash on canonical form, store the real body
+    };
+}
 
-    // Return the original response (stream preserved)
-    return originResponse;
+async function revalidateGql(env, request, reqData, cacheKey, prior) {
+    const originRequest = buildOriginRequest(request, reqData);
+    const produced = await produceGql(originRequest, cacheKey);
+    if (!produced.ok) {
+        return;
+    }
+    await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_GQL, prior });
 }
