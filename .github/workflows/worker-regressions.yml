@@ -1,0 +1,41 @@
+name: Worker regressions
+
+on:
+  pull_request:
+    paths:
+      - "blog/**"
+      - "s3/**"
+      - "speech-to-text/**"
+      - "shared/**"
+      - "tests/**"
+      - "package*.json"
+      - "eslint.config.mjs"
+      - ".github/workflows/worker-regressions.yml"
+  push:
+    branches: [main]
+    paths:
+      - "blog/**"
+      - "s3/**"
+      - "speech-to-text/**"
+      - "shared/**"
+      - "tests/**"
+      - "package*.json"
+      - "eslint.config.mjs"
+      - ".github/workflows/worker-regressions.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  worker-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm test

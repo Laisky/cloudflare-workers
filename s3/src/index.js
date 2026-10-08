@@ -1,9 +1,9 @@
 'use strict';
 
 import { md5 } from 'js-md5';
+import { sha256 } from 'js-sha256';
 import {
     cacheSet,
-    cacheGet,
     headersFromArray,
     headersToArray,
     setDefaultCachePrefix,
@@ -11,6 +11,11 @@ import {
     arrayBufferFromBase64
 } from '@laisky/cf-utils';
 
+import { readBodyWithinLimit, responseWithBody } from "../../shared/body-limits.js";
+import { createBoundedCache } from "../../shared/bounded-cache.js";
+
+const MAX_CACHE_BYTES = 1024 * 1024 - 1;
+const { cacheGet } = createBoundedCache("s3-v0.1/", sha256, Math.ceil(MAX_CACHE_BYTES / 3) * 4, 2 * 1024 * 1024);
 setDefaultCachePrefix("s3-v0.1/");
 
 export default {
@@ -73,8 +78,12 @@ async function redirect2HierachyDir(env, request) {
     }));
 
     // if content size < 1mb
-    if (resp.status === 200 && resp.headers.get("content-length") < 1024 * 1024) {
-        const body = await resp.arrayBuffer();
+    if (request.method === "GET" && resp.status === 200) {
+        const length = resp.headers.get("content-length");
+        if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_CACHE_BYTES)) return resp;
+        const bounded = await readBodyWithinLimit(resp.body, MAX_CACHE_BYTES);
+        if (bounded.bytes === null) return responseWithBody(resp, bounded.stream);
+        const body = bounded.bytes.buffer;
 
         await cacheSet(env, cacheKey, {
             headers: headersToArray(resp.headers),
