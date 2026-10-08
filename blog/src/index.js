@@ -411,6 +411,7 @@ async function produceGeneral(request, cacheKey) {
 async function revalidateGeneral(env, request, cacheKey, prior) {
     const produced = await produceGeneral(request, cacheKey);
     if (!produced.ok) {
+        await produced.response.body?.cancel("Unused background refresh response");
         return; // keep the existing entry on origin failure
     }
     await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior });
@@ -477,6 +478,7 @@ async function producePost(request, pathname, cacheKey) {
     }
 
     if (!isTextResponse(pageResp)) return { ok: false, response: pageResp };
+    if (pageResp.status === 204 || pageResp.status === 205 || pageResp.body === null) return { ok: false, response: pageResp };
     const bounded = await boundedTextResponse(pageResp);
     if (!bounded.ok) return bounded;
     let html = bounded.text;
@@ -549,6 +551,7 @@ async function producePost(request, pathname, cacheKey) {
 async function revalidatePost(env, request, pathname, cacheKey, prior) {
     const produced = await producePost(request, pathname, cacheKey);
     if (!produced.ok) {
+        await produced.response.body?.cancel("Unused background refresh response");
         return;
     }
     if (produced.cardFetchFailed && prior) {
@@ -674,7 +677,7 @@ async function cacheGqQuery(request, env, ctx, pathname) {
 
 /**
  * produceGql fetches the origin GraphQL server. Returns ok:false (with a raw
- * response) for transport errors, unparsable JSON, or GraphQL-level errors, so
+ * response) for transport errors, bodyless responses, unparsable JSON, or GraphQL-level errors, so
  * those payloads are served to the client but never cached.
  */
 async function produceGql(originRequest, cacheKey) {
@@ -687,6 +690,7 @@ async function produceGql(originRequest, cacheKey) {
         return { ok: false, response: originResponse };
     }
 
+    if (originResponse.status === 204 || originResponse.status === 205 || originResponse.body === null) return { ok: false, response: originResponse };
     const bounded = await boundedTextResponse(originResponse);
     if (!bounded.ok) return bounded;
     let respBodyJson;
@@ -725,6 +729,7 @@ async function revalidateGql(env, request, reqData, cacheKey, prior) {
     const originRequest = buildOriginRequest(request, reqData);
     const produced = await produceGql(originRequest, cacheKey);
     if (!produced.ok) {
+        await produced.response.body?.cancel("Unused background refresh response");
         return;
     }
     await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_GQL, prior });

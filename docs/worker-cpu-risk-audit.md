@@ -32,12 +32,20 @@ The added workflow only lints and runs offline tests. Cloudflare-side Git integr
 | Blog GraphQL parsed/canonicalized unchecked input | 64 KiB actual UTF-8 request bound; JSON depth 32 and 20,000-node bounds in [shared/json-limits.js](../shared/json-limits.js) | Oversized POST returns 413; malformed/excessively complex JSON returns 400 before origin. Oversized/complex origin JSON passes through without canonical hashing/cache writes. Normal response JSON bytes and stable canonical hashes are preserved. |
 | Oversized legacy KV/R2 payloads bypassed new write limits | Bound streamed cache envelopes before parse and validate body sizes in [shared/bounded-cache.js](../shared/bounded-cache.js) | Existing prefixes/envelopes and R2 fallback remain readable; invalid/oversized entries become misses. Blog envelope ceiling accommodates JSON escaping; S3 ceiling accommodates base64. No cache flush or migration. |
 | Concurrent stale hits duplicated origin/hash/store work | Coalesce pending refreshes in [blog/src/refresh.js](../blog/src/refresh.js), maximum 128 unique pending keys | Same-isolate concurrent hits share one refresh; stale responses still return immediately. Failure releases the slot. This is not global coordination or a request rate limit. |
-| Speech expanded arbitrary audio into a number array before AI | Bound actual audio to 1 MiB before expansion/inference in [speech-to-text/src/index.js](../speech-to-text/src/index.js) | Upstream failure/oversize returns 502 before AI. Missing binding returns 503 before downloading audio. The same original public sample and successful `{inputs,response}` contract remain. |
-| Speech fixed mutable sample URL now returned 404 | Pin the original WAV at its verified immutable historical commit | HEAD returned 200 with 587,016 bytes, inside the 1 MiB budget; original blob SHA is `faecab8adf7c3297bf63497879ef31e4a3413207`. The sample was removed from master by upstream commit `2ecf7e62c3fe68094403dc672ad589d99add6fb0` on 2026-07-27. [Pinned original sample](https://raw.githubusercontent.com/Azure-Samples/cognitive-services-speech-sdk/10cb305d84c79d7ba2a196e4a20bc18f1cd73715/samples/cpp/windows/console/samples/enrollment_audio_katie.wav). |
-| Speech source required env.AI without declaring its binding | Declare existing inference binding in Wrangler | A future deployment can now invoke Workers AI and incur its separate usage charges. No binding has been deployed by this audit. |
+| Speech expanded arbitrary audio into a number array before AI | Bound actual audio to 1 MiB before expansion/inference in [speech-to-text/src/index.js](../speech-to-text/src/index.js) | Upstream failure/oversize returns 502 before AI. Missing binding returns 503 before downloading audio. The original sample URL and successful `{inputs,response}` contract remain. |
+| Background refresh discarded oversized/error responses without explicitly canceling their body | Cancel only responses discarded by revalidateGeneral/revalidatePost/revalidateGql | Stale cache stays intact; four controlled-stream workerd tests fail on the old PR and pass with cleanup. Foreground oversized responses still replay all bytes to the client. This verifies body ownership, not production TCP connection leakage. |
+| Post origin 204/205 became 500 after empty HTML processing | Return bodyless origin responses unchanged before parsing/injection | Original status, null body and headers survive, without card fetch/cache writes. GraphQL 204/205/304 also retain regression coverage. |
 
 These are processing/cache budgets, not measured CPU caps. A single incoming stream chunk may already exceed a budget; the guard prevents continued whole-body accumulation and expensive transformations.
 The audio echo is retained because client dependencies have not been verified.
+
+## Optional speech activation excluded
+
+The required AI binding declaration and repaired sample URL are excluded from this resource-safety patch. Speech Wrangler configuration is identical to the original main version; the original mutable sample URL remains unchanged. Missing binding returns 503 without fetching, and an upstream error returns 502 without inference; successful `{inputs,response}` remains unchanged when an existing binding and valid audio are available.
+
+The original URL returned 404 during this audit. Its identical original WAV remains at [this immutable historical URL](https://raw.githubusercontent.com/Azure-Samples/cognitive-services-speech-sdk/10cb305d84c79d7ba2a196e4a20bc18f1cd73715/samples/cpp/windows/console/samples/enrollment_audio_katie.wav): HEAD was 200, 587,016 bytes, blob SHA `faecab8adf7c3297bf63497879ef31e4a3413207`. Upstream removed it from master in commit `2ecf7e62c3fe68094403dc672ad589d99add6fb0` on 2026-07-27.
+
+A separate opt-in change could select that valid source and declare `[ai] binding = "AI"`. Together these can activate billable inference that previously failed. No activation patch is included, deployed, or merged here; AI entitlement/client/abuse policy needs an explicit rollout decision.
 
 ## Validation
 
@@ -53,8 +61,11 @@ Tests bundle the actual Worker entrypoints and execute them in workerd, not Node
 All origin/AI fetches are mocked; `cf: false` disables Miniflare Cloudflare requests.
 The speech harness adapts the real AI binding's relative fetch URL to a local mock service and checks the legacy Whisper tensor/output contract.
 
+Cancellation ownership tests use a controlled ReadableStream inside the same workerd isolate as the actual imported Worker entrypoint. Node/Worker-to-Worker bridge cancellation callbacks were not a reliable observer, so the tests make no claim about production socket lifetimes.
+The GraphQL 204/205 candidate did not reproduce in the local workerd runtime: both original main and the old PR already retained status/null-body/headers with no cache writes. Bodyless responses now skip parsing explicitly; the related post 204/205 failure was reproduced and fixed.
+
 Coverage includes actual-byte boundaries, missing Content-Length, streaming before origin EOF, binary cache hits, HEAD/GET separation, oversized legacy KV/R2, R2 fallback, depth/nodes/UTF-8 input budgets, concurrent refreshes, retry after failure, unchanged-content R2 writes, Twitter card injection, original GraphQL wire JSON, and speech success/failure contracts.
-The final suite has 30 tests: the original source has 20 failures and 10 passes; the fixed source passes all 30. Lint and a fresh root `npm ci` also pass.
+The final suite has 39 tests: the original source has 26 failures and 13 passes; the fixed source passes all 39. Lint and a fresh root `npm ci` also pass.
 Wrangler dry-run builds cover blog and S3 production/dev and speech; compatibility dates/routes/cache prefixes remain unchanged.
 Dry-run confirms local configuration/build validity, not live authentication or production CPU headroom.
 
@@ -78,7 +89,7 @@ Once evidence supports a cap, place an intentional production value and explicit
 ## Deployment and rollback implications
 
 This patch performs no deployment. Before a later rollout, check Cloudflare Git integration, snapshot current Worker versions/settings/bindings, verify legitimate clients fit the documented payload budgets, and check AI entitlement/usage policy.
-A deployment of the speech binding can activate paid inference that previously failed; a CPU cap would not limit that cost.
+This patch adds no speech binding and does not repair/activate the sample URL. A future separate activation could incur paid inference; a CPU cap would not limit that cost.
 Roll out to the existing dev bindings first and compare cache hit/miss behavior, CPU quantiles, invocation errors, origin load and KV/R2 writes.
 
 Code rollback restores the former buffering/duplicate-work risks. Cache keys and formats are preserved, so no migration/flush is needed; KV/R2 writes and already-incurred AI usage are not undone by a code rollback.

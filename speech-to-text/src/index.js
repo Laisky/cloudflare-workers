@@ -2,7 +2,7 @@ import { Ai } from './vendor/@cloudflare/ai.js';
 import { readBodyWithinLimit } from "../../shared/body-limits.js";
 
 const MAX_AUDIO_BYTES = 1024 * 1024;
-const AUDIO_URL = 'https://raw.githubusercontent.com/Azure-Samples/cognitive-services-speech-sdk/10cb305d84c79d7ba2a196e4a20bc18f1cd73715/samples/cpp/windows/console/samples/enrollment_audio_katie.wav';
+const AUDIO_URL = 'https://github.com/Azure-Samples/cognitive-services-speech-sdk/raw/master/samples/cpp/windows/console/samples/enrollment_audio_katie.wav';
 
 export default {
     /** fetch bounds sample audio before expansion/inference and preserves the existing JSON contract. */

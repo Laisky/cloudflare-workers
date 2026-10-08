@@ -222,3 +222,103 @@ test("Blog GraphQL wire JSON stays unchanged while reordered fields do not rewri
         assert.equal((await bucket.get(key)).etag, before.etag);
     } finally { await mf.dispose(); }
 });
+
+for (const status of [204, 205, 304]) {
+    test(`Blog GraphQL origin ${status} preserves a null body and headers without cache writes`, async () => {
+        let calls = 0;
+        const mf = await workerHarness("blog", () => {
+            calls++;
+            return new Response(null, { status, headers: { "X-Origin-NoBody": String(status), ETag: '"empty"' } });
+        });
+        try {
+            const response = await mf.dispatchFetch("https://gq.laisky.com/query/?query=query%20%7B%20x%20%7D");
+            assert.equal(response.status, status);
+            assert.equal(response.body, null);
+            assert.equal(response.headers.get("X-Origin-NoBody"), String(status));
+            assert.equal(response.headers.get("ETag"), '"empty"');
+            assert.equal((await response.arrayBuffer()).byteLength, 0);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            assert.equal(calls, 1);
+            assert.equal((await (await mf.getKVNamespace("KV")).list()).keys.length, 0);
+            assert.equal((await (await mf.getR2Bucket("BUCKET")).list()).objects.length, 0);
+        } finally { await mf.dispose(); }
+    });
+}
+for (const status of [204, 205]) {
+    test(`Blog post origin ${status} preserves a null body without card fetch or cache writes`, async () => {
+        let calls = 0;
+        const mf = await workerHarness("blog", () => {
+            calls++;
+            return new Response(null, { status, headers: { "X-Origin-NoBody": String(status) } });
+        });
+        try {
+            const response = await mf.dispatchFetch("https://blog.laisky.com/p/no-content");
+            assert.equal(response.status, status);
+            assert.equal(response.body, null);
+            assert.equal(response.headers.get("X-Origin-NoBody"), String(status));
+            assert.equal((await response.arrayBuffer()).byteLength, 0);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            assert.equal(calls, 1);
+            assert.equal((await (await mf.getKVNamespace("KV")).list()).keys.length, 0);
+            assert.equal((await (await mf.getR2Bucket("BUCKET")).list()).objects.length, 0);
+        } finally { await mf.dispose(); }
+    });
+}
+
+for (const scenario of [
+    { name: "general oversized", url: "https://blog.laisky.com/pages/cancel-large", status: 200, size: LIMIT + 1,
+        logical: "general:GET:https://blog.laisky.com/pages/cancel-large" },
+    { name: "post oversized", url: "https://blog.laisky.com/p/cancel-large", status: 200, size: LIMIT + 1,
+        logical: "post:GET:/p/cancel-large" },
+    { name: "GraphQL oversized", url: "https://gq.laisky.com/query/?query=query%20%7B%20x%20%7D", status: 200, size: LIMIT + 1,
+        logical: "graphql:GET:/query/:" + JSON.stringify({ query: "query { x }", variables: null }) },
+    { name: "general upstream error", url: "https://blog.laisky.com/pages/cancel-error", status: 503, size: 32,
+        logical: "general:GET:https://blog.laisky.com/pages/cancel-error" }
+]) {
+    test(`Blog background ${scenario.name} releases an origin response discarded after serving stale cache`, async () => {
+        const originScript = `let canceled = 0, started = 0;
+            export default { fetch(request) {
+                if (new URL(request.url).pathname === "/_test-state") return Response.json({ canceled, started });
+                started++;
+                return new Response(new ReadableStream({
+                    start(controller) { controller.enqueue(new Uint8Array(${scenario.size}).fill(65)); },
+                    cancel() { canceled++; }
+                }), { status: ${scenario.status}, headers: { "Content-Type": "text/html" } });
+            } }`;
+        const mf = await workerHarness("blog", originScript);
+        const state = async () => (await mf.dispatchFetch("http://origin/_test-state")).json();
+        try {
+            const kv = await mf.getKVNamespace("KV"), key = "blog-v2.25/" + sha(scenario.logical);
+            await kv.put(key, JSON.stringify({
+                body: "old", headers: [], staleAt: Date.now() - 1000, expiresAt: Date.now() + 86400000
+            }));
+            assert.equal(await (await mf.dispatchFetch(scenario.url)).text(), "old");
+            await eventually(async () => (await state()).started === 1);
+            await eventually(async () => (await state()).canceled === 1);
+            assert.equal(JSON.parse(await kv.get(key)).body, "old");
+        } finally { await mf.dispose(); }
+    });
+}
+
+test("Blog foreground oversized response keeps replay streaming until the client finishes", async () => {
+    let release, canceled = false;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const body = new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array(LIMIT + 1).fill(65)); },
+        async pull(controller) { await blocked; if (!canceled) { controller.enqueue(new Uint8Array([66])); controller.close(); } },
+        cancel() { canceled = true; release(); }
+    });
+    const mf = await workerHarness("blog", () => new Response(body, { headers: { "Content-Type": "text/html" } }));
+    try {
+        const fetching = mf.dispatchFetch("https://blog.laisky.com/pages/foreground-stream");
+        const response = await Promise.race([fetching, new Promise(resolve => setTimeout(() => resolve(null), 1000))]);
+        assert.notEqual(response, null, "Client should receive the replay stream before origin EOF");
+        assert.equal(canceled, false, "Foreground response must stay available to the client");
+        release();
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        assert.equal(bytes.length, LIMIT + 2);
+        assert.equal(bytes.at(-1), 66);
+        assert.equal(canceled, false);
+        assert.equal((await (await mf.getKVNamespace("KV")).list()).keys.length, 0);
+    } finally { release(); await mf.dispose(); }
+});

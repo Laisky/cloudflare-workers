@@ -10,7 +10,19 @@ export async function workerHarness(project, origin, ai) {
         "@laisky/cf-utils": require.resolve(project === "s3" ? "cf-utils-s3" : "cf-utils-blog")
     };
     const output = await build({
-        ...(project === "speech-to-text" ? {
+        ...(typeof origin === "string" ? {
+            stdin: {
+                contents: `import worker from "./${project}/src/index.js"; import origin from "test-origin"; globalThis.fetch = (request, init) => origin.fetch(typeof request === "string" ? new Request(request, init) : request); export default { fetch(request, env, ctx) { if (new URL(request.url).pathname === "/_test-state") return origin.fetch(request); return worker.fetch(request, env, ctx); } };`,
+                resolveDir: process.cwd(), sourcefile: "same-isolate-origin-adapter.js"
+            },
+            plugins: [{
+                name: "controlled-origin",
+                setup(build) {
+                    build.onResolve({ filter: /^test-origin$/ }, () => ({ path: "test-origin", namespace: "test-origin" }));
+                    build.onLoad({ filter: /.*/, namespace: "test-origin" }, () => ({ contents: origin, loader: "js" }));
+                }
+            }]
+        } : project === "speech-to-text" ? {
             stdin: {
                 contents: 'import worker from "./speech-to-text/src/index.js"; export default { fetch(request, env, ctx) { const binding = env.AI; return worker.fetch(request, { ...env, AI: binding && { fetch(url, init) { return binding.fetch(new URL(url, "http://ai"), init); } } }, ctx); } };',
                 resolveDir: process.cwd(), sourcefile: "speech-ai-test-adapter.js"
@@ -22,7 +34,7 @@ export async function workerHarness(project, origin, ai) {
         cf: false, modules: true, script: output.outputFiles[0].text,
         compatibilityDate: project === "speech-to-text" ? "2023-10-30" : "2024-09-27",
         kvNamespaces: ["KV"], r2Buckets: ["BUCKET"],
-        outboundService: origin,
+        outboundService: typeof origin === "string" ? () => new Response("Unexpected external fetch", { status: 500 }) : origin,
         serviceBindings: ai ? { AI: ai } : {},
         log: new Log(LogLevel.NONE)
     });
