@@ -1,18 +1,19 @@
 import { Ai } from './vendor/@cloudflare/ai.js';
+import { readBodyWithinLimit } from "../../shared/body-limits.js";
+
+const MAX_AUDIO_BYTES = 1024 * 1024;
+const AUDIO_URL = 'https://github.com/Azure-Samples/cognitive-services-speech-sdk/raw/master/samples/cpp/windows/console/samples/enrollment_audio_katie.wav';
 
 export default {
-	async fetch(request, env) {
-		const audioResponse = await fetch(
-			'https://github.com/Azure-Samples/cognitive-services-speech-sdk/raw/master/samples/cpp/windows/console/samples/enrollment_audio_katie.wav'
-		);
-		const blob = await audioResponse.arrayBuffer();
-
-		const ai = new Ai(env.AI);
-		const inputs = {
-			audio: [...new Uint8Array(blob)]
-		};
-		const response = await ai.run('@cf/openai/whisper', inputs);
-
-		return Response.json({ inputs, response });
-	}
+    /** fetch bounds sample audio before expansion/inference and preserves the existing JSON contract. */
+    async fetch(request, env) {
+        if (!env.AI) return new Response("AI binding is unavailable", { status: 503 });
+        const audioResponse = await fetch(AUDIO_URL);
+        if (!audioResponse.ok) return new Response("Audio upstream failed", { status: 502 });
+        const bounded = await readBodyWithinLimit(audioResponse.body, MAX_AUDIO_BYTES, true);
+        if (bounded.bytes === null) return new Response("Audio upstream is too large", { status: 502 });
+        const inputs = { audio: Array.from(bounded.bytes) };
+        const response = await new Ai(env.AI).run('@cf/openai/whisper', inputs);
+        return Response.json({ inputs, response });
+    }
 };

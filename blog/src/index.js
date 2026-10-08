@@ -1,8 +1,6 @@
 'use strict';
 
 import {
-    cacheGet,
-    kvGet,
     kvSet,
     bucketSet,
     headersFromArray,
@@ -11,6 +9,30 @@ import {
     sendErrorAlert
 } from '@laisky/cf-utils';
 import { sha256 } from 'js-sha256';
+import { readBodyWithinLimit, responseWithBody } from "../../shared/body-limits.js";
+import { parseBoundedJson, assertBoundedJson } from "../../shared/json-limits.js";
+import { createBoundedCache } from "../../shared/bounded-cache.js";
+import { scheduleRefresh } from "./refresh.js";
+
+const MAX_CACHE_BODY_BYTES = 1024 * 1024;
+const MAX_GQL_REQUEST_BYTES = 64 * 1024;
+const MAX_CARD_BYTES = 64 * 1024;
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+
+/** boundedTextResponse buffers processable text and preserves larger origin responses as streams. */
+async function boundedTextResponse(response, limit = MAX_CACHE_BODY_BYTES) {
+    const bounded = await readBodyWithinLimit(response.body, limit);
+    return bounded.bytes === null
+        ? { ok: false, response: responseWithBody(response, bounded.stream) }
+        : { ok: true, text: decoder.decode(bounded.bytes), bytes: bounded.bytes };
+}
+
+/** isTextResponse excludes binary origin assets from text decoding and cache mutation. */
+function isTextResponse(response) {
+    const type = response.headers.get("Content-Type");
+    return !type || /^(text\/|application\/(?:json|[^;]+\+json|xml|javascript)|image\/svg\+xml)/i.test(type);
+}
 
 
 /* cache for site page and GraphQL query
@@ -48,6 +70,10 @@ in-payload `expiration` check keeps reads correct during the sweep window).
 
 const CACHE_PREFIX = "blog-v2.25/"; // Increment version or use a date
 setDefaultCachePrefix(CACHE_PREFIX);
+const { cacheGet, kvGet } = createBoundedCache(
+    CACHE_PREFIX, sha256, MAX_CACHE_BODY_BYTES, MAX_CACHE_BODY_BYTES * 6 + 128 * 1024,
+    value => isTextResponse(new Response(null, { headers: headersFromArray(value.headers) }))
+);
 
 const GraphqlAPI = "https://gq.laisky.com/query/";
 
@@ -272,23 +298,25 @@ function freshResponse(produced, headersSource, cacheStatus) {
  * @returns {Promise<void>}
  */
 async function writeIfChanged(env, key, produced, { softTtl, prior }) {
+    if (produced.body.length > MAX_CACHE_BODY_BYTES
+        || encoder.encode(produced.body).byteLength > MAX_CACHE_BODY_BYTES) return;
     const now = Date.now();
     const hash = sha256(produced.hashInput != null ? produced.hashInput : produced.body);
 
     if (prior && prior.hash === hash) {
         if (!prior.staleAt || now < prior.staleAt) {
             // Unchanged and still fresh: write nothing at all.
-            console.log(`Cache unchanged+fresh, skip write: ${key}`);
+            console.log(`Cache unchanged+fresh, skip write: [cache key]`);
             return;
         }
         // Unchanged but stale: KV-only freshness touch, skip the R2 PutObject.
-        console.log(`Cache unchanged, KV-only staleAt touch: ${key}`);
+        console.log(`Cache unchanged, KV-only staleAt touch: [cache key]`);
         await kvSet(env, ck(key), { ...prior, staleAt: now + softTtl * 1000 }, HARD_TTL);
         return;
     }
 
     // Absent or genuinely changed: full dual write with the long physical TTL.
-    console.log(`Cache write (changed/new): ${key}`);
+    console.log(`Cache write (changed/new): [cache key]`);
     const envelope = {
         body: produced.body,
         headers: produced.storeHeaders,
@@ -321,10 +349,10 @@ async function generalCache(request, env, ctx) {
             cached = await cacheGet(env, cacheKey);
             if (cached != null) {
                 const isStale = !cached.staleAt || Date.now() >= cached.staleAt;
-                console.log(`generalCache ${isStale ? "STALE" : "FRESH"} hit for ${cacheKey}`);
+                console.log(`generalCache ${isStale ? "STALE" : "FRESH"} hit for [cache key]`);
                 if (shouldRevalidate(cached)) {
-                    ctx.waitUntil(revalidateGeneral(env, request, cacheKey, cached)
-                        .catch((err) => console.error(`generalCache revalidate failed for ${cacheKey}:`, err)));
+                    scheduleRefresh(ctx, cacheKey, () => revalidateGeneral(env, request, cacheKey, cached)
+                        .catch((err) => console.error(`generalCache revalidate failed for [cache key]:`, err)));
                 }
                 return serveFromCache(cached, isStale);
             }
@@ -338,11 +366,11 @@ async function generalCache(request, env, ctx) {
 
         const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
         ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior })
-            .catch((err) => console.error(`generalCache write failed for ${cacheKey}:`, err)));
+            .catch((err) => console.error(`generalCache write failed for [cache key]:`, err)));
 
         return freshResponse(produced, produced.originHeaders, didRead ? "MISS" : "BYPASS");
     } catch (error) {
-        console.error(`Error in generalCache for ${cacheKey}:`, error);
+        console.error(`Error in generalCache for [cache key]:`, error);
         // Last resort - fetch again without caching
         return fetch(request);
     }
@@ -363,7 +391,10 @@ async function produceGeneral(request, cacheKey) {
         return { ok: false, response: response };
     }
 
-    const body = await response.clone().text();
+    if (!isTextResponse(response)) return { ok: false, response };
+    const bounded = await boundedTextResponse(response);
+    if (!bounded.ok) return bounded;
+    const body = bounded.text;
     const storeHeaders = headersToArray(response.headers);
     storeHeaders.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
 
@@ -380,6 +411,7 @@ async function produceGeneral(request, cacheKey) {
 async function revalidateGeneral(env, request, cacheKey, prior) {
     const produced = await produceGeneral(request, cacheKey);
     if (!produced.ok) {
+        await produced.response.body?.cancel("Unused background refresh response");
         return; // keep the existing entry on origin failure
     }
     await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior });
@@ -389,7 +421,7 @@ async function revalidateGeneral(env, request, cacheKey, prior) {
 // insert twitter card into post page's html head
 async function insertTwitterCard(request, env, ctx, pathname) {
     const cacheKey = `post:${request.method}:${pathname}`;
-    console.log(`InsertTwitterCard: Key=${cacheKey}`);
+    console.log(`InsertTwitterCard: Key=[cache key]`);
 
     let didRead = false;
     let cached = null;
@@ -400,16 +432,16 @@ async function insertTwitterCard(request, env, ctx, pathname) {
         cached = await cacheGet(env, cacheKey);
         if (cached && typeof cached === "object" && cached.body != null) {
             const isStale = !cached.staleAt || Date.now() >= cached.staleAt;
-            console.log(`InsertTwitterCard: ${isStale ? "STALE" : "FRESH"} HIT ${cacheKey}`);
+            console.log(`InsertTwitterCard: ${isStale ? "STALE" : "FRESH"} HIT [cache key]`);
             if (shouldRevalidate(cached)) {
-                ctx.waitUntil(revalidatePost(env, request, pathname, cacheKey, cached)
-                    .catch((err) => console.error(`InsertTwitterCard revalidate failed for ${cacheKey}:`, err)));
+                scheduleRefresh(ctx, cacheKey, () => revalidatePost(env, request, pathname, cacheKey, cached)
+                    .catch((err) => console.error(`InsertTwitterCard revalidate failed for [cache key]:`, err)));
             }
             return serveFromCache(cached, isStale);
         }
-        console.log(`InsertTwitterCard: MISS ${cacheKey}`);
+        console.log(`InsertTwitterCard: MISS [cache key]`);
     } else {
-        console.log(`InsertTwitterCard: BYPASS ${cacheKey}`);
+        console.log(`InsertTwitterCard: BYPASS [cache key]`);
     }
 
     // 2. Miss or bypass: build the (card-injected) page.
@@ -421,10 +453,10 @@ async function insertTwitterCard(request, env, ctx, pathname) {
     // Don't clobber an existing good entry when the card fetch failed transiently.
     const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
     if (produced.cardFetchFailed && prior) {
-        console.warn(`InsertTwitterCard: card fetch failed, preserving cached entry ${cacheKey}`);
+        console.warn(`InsertTwitterCard: card fetch failed, preserving cached entry [cache key]`);
     } else {
         ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior })
-            .catch((err) => console.error(`InsertTwitterCard write failed for ${cacheKey}:`, err)));
+            .catch((err) => console.error(`InsertTwitterCard write failed for [cache key]:`, err)));
     }
 
     return freshResponse(produced, produced.storeHeaders, didRead ? "MISS" : "BYPASS");
@@ -445,12 +477,16 @@ async function producePost(request, pathname, cacheKey) {
         return { ok: false, response: pageResp };
     }
 
-    let html = await pageResp.clone().text();
+    if (!isTextResponse(pageResp)) return { ok: false, response: pageResp };
+    if (pageResp.status === 204 || pageResp.status === 205 || pageResp.body === null) return { ok: false, response: pageResp };
+    const bounded = await boundedTextResponse(pageResp);
+    if (!bounded.ok) return bounded;
+    let html = bounded.text;
 
     const postNameMatch = /\/p\/([^/?#]+)/.exec(pathname);
     if (!postNameMatch || !postNameMatch[1]) {
         console.error(`InsertTwitterCard: Could not extract post name from pathname: ${pathname}`);
-        return { ok: false, response: pageResp };
+        return { ok: false, response: responseWithBody(pageResp, bounded.bytes) };
     }
     const postName = postNameMatch[1];
 
@@ -471,7 +507,12 @@ async function producePost(request, pathname, cacheKey) {
         });
 
         if (cardResp.ok) {
-            const cardJson = await cardResp.json();
+            const cardBody = await boundedTextResponse(cardResp, MAX_CARD_BYTES);
+            if (!cardBody.ok) {
+                await cardBody.response.body.cancel("Card exceeds processing budget");
+                throw new RangeError("Twitter card exceeds processing budget");
+            }
+            const cardJson = parseBoundedJson(cardBody.text);
             twitterCard = cardJson?.data?.BlogTwitterCard || '';
             if (twitterCard) {
                 console.log(`InsertTwitterCard: Successfully fetched Twitter card for ${postName}.`);
@@ -510,11 +551,12 @@ async function producePost(request, pathname, cacheKey) {
 async function revalidatePost(env, request, pathname, cacheKey, prior) {
     const produced = await producePost(request, pathname, cacheKey);
     if (!produced.ok) {
+        await produced.response.body?.cancel("Unused background refresh response");
         return;
     }
     if (produced.cardFetchFailed && prior) {
         // A background refresh must never overwrite a good entry with card-less HTML.
-        console.warn(`InsertTwitterCard: revalidate card fetch failed, keeping ${cacheKey}`);
+        console.warn(`InsertTwitterCard: revalidate card fetch failed, keeping [cache key]`);
         return;
     }
     await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior });
@@ -567,8 +609,9 @@ async function cacheGqQuery(request, env, ctx, pathname) {
         };
     } else if (request.method === "POST") {
         try {
-            const reqClone = request.clone();
-            reqData = await reqClone.json();
+            const bounded = await readBodyWithinLimit(request.body, MAX_GQL_REQUEST_BYTES, true);
+            if (bounded.bytes === null) return new Response("GraphQL request is too large", { status: 413 });
+            reqData = parseBoundedJson(decoder.decode(bounded.bytes));
         } catch (e) {
             console.error("CacheGqQuery: Failed to parse request JSON body:", e);
             return new Response("Invalid JSON body", { status: 400 });
@@ -590,10 +633,12 @@ async function cacheGqQuery(request, env, ctx, pathname) {
         console.log("CacheGqQuery: Bypass non-query request (heuristic).");
         return fetch(buildOriginRequest(request, reqData));
     }
+    try { assertBoundedJson(reqData); }
+    catch { return new Response("GraphQL request structure is too complex", { status: 400 }); }
     console.log("CacheGqQuery: Processing as query.");
 
     const cacheKey = `graphql:${request.method}:${pathname}:${JSON.stringify(reqData)}`;
-    console.log(`CacheGqQuery: Key=${cacheKey}`);
+    console.log("CacheGqQuery: Cache key prepared.");
 
     let didRead = false;
     let cached = null;
@@ -604,16 +649,16 @@ async function cacheGqQuery(request, env, ctx, pathname) {
         cached = await cacheGet(env, cacheKey);
         if (cached && typeof cached === "object" && cached.body != null) {
             const isStale = !cached.staleAt || Date.now() >= cached.staleAt;
-            console.log(`CacheGqQuery: ${isStale ? "STALE" : "FRESH"} HIT ${cacheKey}`);
+            console.log(`CacheGqQuery: ${isStale ? "STALE" : "FRESH"} HIT [cache key]`);
             if (shouldRevalidate(cached)) {
-                ctx.waitUntil(revalidateGql(env, request, reqData, cacheKey, cached)
-                    .catch((err) => console.error(`CacheGqQuery revalidate failed for ${cacheKey}:`, err)));
+                scheduleRefresh(ctx, cacheKey, () => revalidateGql(env, request, reqData, cacheKey, cached)
+                    .catch((err) => console.error(`CacheGqQuery revalidate failed for [cache key]:`, err)));
             }
             return serveFromCache(cached, isStale);
         }
-        console.log(`CacheGqQuery: MISS ${cacheKey}`);
+        console.log(`CacheGqQuery: MISS [cache key]`);
     } else {
-        console.log(`CacheGqQuery: BYPASS ${cacheKey}`);
+        console.log(`CacheGqQuery: BYPASS [cache key]`);
     }
 
     // 4. Miss or bypass: fetch origin and (conditionally) refresh the cache.
@@ -625,14 +670,14 @@ async function cacheGqQuery(request, env, ctx, pathname) {
 
     const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
     ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_GQL, prior })
-        .catch((err) => console.error(`CacheGqQuery write failed for ${cacheKey}:`, err)));
+        .catch((err) => console.error(`CacheGqQuery write failed for [cache key]:`, err)));
 
     return freshResponse(produced, produced.originHeaders, didRead ? "MISS" : "BYPASS");
 }
 
 /**
  * produceGql fetches the origin GraphQL server. Returns ok:false (with a raw
- * response) for transport errors, unparsable JSON, or GraphQL-level errors, so
+ * response) for transport errors, bodyless responses, unparsable JSON, or GraphQL-level errors, so
  * those payloads are served to the client but never cached.
  */
 async function produceGql(originRequest, cacheKey) {
@@ -645,26 +690,26 @@ async function produceGql(originRequest, cacheKey) {
         return { ok: false, response: originResponse };
     }
 
+    if (originResponse.status === 204 || originResponse.status === 205 || originResponse.body === null) return { ok: false, response: originResponse };
+    const bounded = await boundedTextResponse(originResponse);
+    if (!bounded.ok) return bounded;
     let respBodyJson;
     try {
-        respBodyJson = await originResponse.clone().json();
+        respBodyJson = parseBoundedJson(bounded.text);
     } catch (e) {
         console.error("CacheGqQuery: Failed to parse origin JSON response:", e);
-        return { ok: false, response: originResponse };
+        return { ok: false, response: responseWithBody(originResponse, bounded.bytes) };
     }
 
     if (respBodyJson.errors) {
         console.warn(`CacheGqQuery: Origin response contains GraphQL errors: ${JSON.stringify(respBodyJson.errors)}`);
         return {
             ok: false,
-            response: new Response(JSON.stringify(respBodyJson), {
-                status: originResponse.status,
-                headers: originResponse.headers
-            })
+            response: responseWithBody(originResponse, bounded.bytes)
         };
     }
 
-    const body = JSON.stringify(respBodyJson);
+    const body = bounded.text;
     const storeHeaders = headersToArray(originResponse.headers);
     storeHeaders.push(["X-Laisky-Cf-Cache", "SAVED"]);
     storeHeaders.push(["X-Laisky-Cf-Cache-Key", cacheKey]);
@@ -684,6 +729,7 @@ async function revalidateGql(env, request, reqData, cacheKey, prior) {
     const originRequest = buildOriginRequest(request, reqData);
     const produced = await produceGql(originRequest, cacheKey);
     if (!produced.ok) {
+        await produced.response.body?.cancel("Unused background refresh response");
         return;
     }
     await writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_GQL, prior });
