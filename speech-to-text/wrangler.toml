@@ -1,3 +1,7 @@
+# Workers Free: Cloudflare rejects custom limits.cpu_ms (API error 100328).
+# Keep the platform CPU limit; do not add a Paid-only cap or upgrade the plan.
+# Verified 2026-10-08 with a non-deployed blog-dev version upload.
+
 name = "speech-to-text"
 main = "src/index.js"
 compatibility_date = "2023-10-30"
