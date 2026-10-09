@@ -1,30 +1,58 @@
 # Worker CPU and payload risk audit
 
-## Current Free-plan qualification and removal assessment (2026-10-08)
+## KV-only cache change (2026-10-09)
 
-This dated section supersedes the original audit's pre-login/pre-deployment status below. PR #7 is merged at `aaa3e0b4e88e19483eb953f5514e55b04efdafd6` and its resource guards were deployed to all five existing Workers. Supported authenticated Wrangler reads verified absent custom CPU limits and unchanged existing bindings; speech still has no AI binding. No paid inference was activated.
+This section supersedes the historical KV/R2 fallback contract below. The blog,
+blog-dev, s3 and s3-dev entrypoints now read/write only KV, with all four BUCKET
+bindings removed. No public cf-utils implementation or dependency version changes.
+Speech source/configuration remains identical to main before this change.
 
-A 300 ms CPU candidate was prepared for blog, blog-dev, s3, s3-dev and speech-to-text. Parsed TOML contract comparisons proved that routes, compatibility dates, bindings and every other field were unchanged. All five Wrangler 4.148.0 dry runs, lint and all 39 offline workerd tests passed. Local dry runs do not enforce the network CPU limit.
+All 17 routes, Worker names, compatibility dates, KV namespace IDs, cache prefixes
+(`blog-v2.25/`, `s3-v0.1/`), logical/physical keys and existing envelope formats remain.
+Both physical KV TTLs are **seven days**: the pinned S3 cf-utils 0.0.5 default is
+604800 seconds. Blog retains its HTML 24-hour and GraphQL 600-second soft TTLs,
+write-on-change hashing, KV freshness touch and same-isolate refresh coalescing.
+Root redirects, post Twitter cards, MD5 image-path conversion, response status/
+headers, binary/HEAD/large streaming and raw GraphQL response bytes are retained.
 
-Qualification used `wrangler versions upload` on the existing blog-dev Worker with inherited secrets/plain variables, strict checks, automatic provisioning disabled and no traffic deployment. Cloudflare rejected the candidate with **100328: CPU limits are not supported for the Free plan**. Deployment records were identical before and after. The reviewed upload path submits Worker version metadata; it contains no subscription upgrade operation. No new version was accepted, no resources were provisioned, and no plan was upgraded. The unsupported candidate was removed from all three deployable configurations; their parsed contents are exactly those of merged PR #7. Comments document this Free-plan constraint.
+Authenticated/cookie requests bypass shared cache reads and writes. Origin responses
+with Set-Cookie or private/no-store Cache-Control are never written to shared KV;
+legacy envelopes with those headers are ignored. This prevents user-specific content
+from reading or overwriting a public key while retaining origin and post-card behavior.
+Public force/no-cache requests retain their existing refresh semantics.
 
-The account is therefore verified as Workers Free at qualification time, rather than inferred from `usage_model = standard`. Free has a documented 10 ms CPU allowance per HTTP invocation with occasional burst flexibility, and 100,000 requests/day across the account. A 27 ms successful sample does not establish a Paid plan or guaranteed 27 ms allowance. The 300 ms setting cannot be used to enlarge Free CPU headroom. Paid's 30 million included CPU-ms and $0.02/million overage (equivalently $0.072/CPU-hour) apply only after a Paid subscription, with its minimum $5/month. Staying Free avoids Workers CPU overage charges; it does not establish a $0 total Cloudflare bill because R2 has separate metered storage/operation charges above its free tier. No R2 billing usage was verified here.
+KV failures remain cache misses and write failures do not replace a successful origin
+response. **R2-only entries no longer provide a fallback**: absent/expired/unavailable KV
+requires origin access. A failed origin then returns its existing failure response;
+SWR still serves an available stale KV entry while a refresh fails. Origin load can
+increase during KV eviction, eventual-consistency misses or Free quota exhaustion.
+[KV Free limits](https://developers.cloudflare.com/kv/platform/limits/) include
+100000 reads/day and 1000 writes/day; same-key writes remain limited to one/second.
+[KV consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/) remains
+eventual; same-isolate coalescing provides no account-wide coordination.
 
-A 15-minute natural-traffic observation, 18:54:16.965-19:09:16.967 UTC, captured 44 blog invocations: all succeeded, total CPU 135 ms, median 1 ms, maximum 27 ms, and maximum wall time 2,120 ms. S3 and speech captured zero events. This is a small window, not monthly traffic or a P99 estimate. Network waiting is not execution CPU.
+Workers Free was confirmed by Cloudflare rejection 100328 of an earlier non-deploying
+custom CPU-limit upload. No limits.cpu_ms is added, subscription changed or paid AI
+enabled. R2 billing is separate: removing these four cache bindings eliminates their
+R2 API calls but does not guarantee account-wide USD 0. Existing prod/dev objects and
+their verified seven-day lifecycle are retained; no bucket/data deletion, public
+access/security change or new credentials are part of this rollout.
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/) still applies to retained
+storage and any other consumers. Bounded searches of 27 personal repositories found
+no additional direct Worker BUCKET consumers; external npm clients and all account
+services were not exhaustively inventoried, so bucket retirement requires that check.
 
-| Worker | Why it exists | Replacement and effect of removal |
-| --- | --- | --- |
-| blog / blog-dev | Root redirect; public page/asset caching; post-specific Twitter cards injected into HTML; canonical GraphQL GET/POST cache plus stale refresh using KV/R2 | Static assets and appropriate public GET pages can use normal CDN/cache rules; the root redirect can move to the origin or a redirect rule. Ordinary cache rules cannot replace POST-body canonicalization or HTML injection. Render post cards on the origin/b1 and use backend caching for GraphQL before removing Worker routes. The backend already generates card HTML in `laisky-blog-graphql/internal/web/blog/controller/blog.go:166`, while the frontend index currently contains generic site metadata. Origin/b1 live deployment capacity and existing cache rules are not verified. |
-| s3 / s3-dev | Translate legacy flat Twitter image URLs to MD5-sharded paths; cache small image bodies in KV/R2 | Move the filename-to-shard handler to the origin/b1, then use normal CDN image caching. Current tweet URL producer still emits flat URLs (`laisky-blog-graphql/internal/web/twitter/controller/tweets.go:120`), so detaching Worker routes now can break old and newly generated image links. Updating only new URLs is insufficient: retain compatibility for old URLs. Ordinary cache rules cannot compute MD5 shard paths. |
-| speech-to-text | Sample audio transcription demo, presently no AI binding and therefore 503 without inference | First removal candidate after checking callers; it currently offers no working transcription feature. No observed events in 15 minutes is insufficient to prove there are no consumers. |
+Qualification uses offline workerd with no BUCKET binding and a poison binding-access
+counter, injected KV get/put failures, eviction/origin failure, binary/HEAD/streaming,
+refresh cleanup, share cards, exact GraphQL bytes/mutation/denial and private-cache
+exclusions. New pre-change tests recorded 26 failures and 2 passes. All 71 offline tests and lint passed; all four Wrangler 4.148.0 dry runs passed
+and emitted bundles without R2 access. Parsed TOML differs only by the four R2 arrays.
+Re-run checks against the exact merged tree before sequential live deployment. Capture the existing version per Worker, verify routes/control settings
+and all bindings except BUCKET, then verify safe health checks. Roll back to the
+captured version on failure and verify R2 binding restoration; retained bucket data
+allows the previous implementation to run. Billing already incurred is not reversible.
 
-Recommended order if the goal is a simpler stack: inventory speech callers; preserve/remove the unused demo when explicitly chosen; implement and verify legacy S3 URL compatibility on the existing origin; move post metadata and GraphQL caching to the origin; then detach the corresponding Worker routes in dev and production. Keep Cloudflare DNS/proxy/CDN. None of these migration steps was executed during this assessment.
-
-Before detaching routes, compare origin and Worker responses for root redirects, public versus authenticated/cookie requests, post-specific metadata, normal/malformed GraphQL, cache hit/miss/invalidation, old and sharded image URLs, exact binary bytes, HEAD, Range and error responses. Load-test cache misses against b1 without enabling paid features. Expect increased origin requests/latency when KV/R2 cache is removed. Retain current version IDs, route lists and cache data so routing can be restored; a routing rollback cannot undo charges already incurred. Removing Workers alone does not remove existing R2 storage charges, and no bucket/data deletion is authorized.
-
-Sources: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Wrangler limits](https://developers.cloudflare.com/workers/wrangler/configuration/#limits), [non-deploying version uploads](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/#upload-a-version-without-deploying), [normal CDN cache eligibility](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/).
-
-## Original resource-guard audit (historical pre-rollout record)
+## Historical resource-guard audit before the KV-only rollout
 
 Source audit: 2026-10-08, against main at `42a55fda066d3ea690df64d85bc260622b2fd26f`.
 The fixes below run entirely in local workerd/Miniflare with mocked outbound services and local KV/R2.

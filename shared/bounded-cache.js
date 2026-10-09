@@ -19,18 +19,9 @@ export function createBoundedCache(prefix, hashKey, maxBodyBytes, maxEnvelopeByt
             return safe(value) ? value : null;
         } catch (error) { console.warn("Bounded KV cache read failed:", error.message); return null; }
     }
-    /** cacheGet prefers KV and falls back to a non-expired R2 envelope using the same physical key. */
+    /** cacheGet reads only KV using the unchanged physical cache key. */
     async function cacheGet(env, key) {
-        const physicalKey = prefix + hashKey(key);
-        const cached = await kvGet(env, physicalKey);
-        if (cached) return cached;
-        try {
-            const object = await env.BUCKET.get(physicalKey);
-            if (!object) return null;
-            const payload = await parse(object.body);
-            if (!payload || (payload.expiration !== 0 && payload.expiration < Date.now())) return null;
-            return safe(payload.data) ? payload.data : null;
-        } catch (error) { console.warn("Bounded R2 cache read failed:", error.message); return null; }
+        return kvGet(env, prefix + hashKey(key));
     }
     return { cacheGet, kvGet };
 }
