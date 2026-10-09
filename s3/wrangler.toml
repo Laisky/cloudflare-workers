@@ -1,3 +1,7 @@
+# Workers Free: Cloudflare rejects custom limits.cpu_ms (API error 100328).
+# Keep the platform CPU limit; do not add a Paid-only cap or upgrade the plan.
+# Verified 2026-10-08 with a non-deployed blog-dev version upload.
+
 # Top-level configuration
 name = "s3"
 main = "src/index.js"
@@ -13,9 +17,6 @@ kv_namespaces = [
   { binding = "KV", id = "efd98ae5891f4ab88ae1be309a2ff9ae" }, # PROD
 ]
 
-r2_buckets  = [
-	{ binding = "BUCKET", bucket_name = "prod" }
-]
 
 [env.dev]
 name = "s3-dev"
@@ -30,8 +31,4 @@ routes = [
 
 kv_namespaces = [
   { binding = "KV", id = "d48acfe0b8b7426cafa9234e5c5d7ee2" }, # DEV
-]
-
-r2_buckets  = [
-	{ binding = "BUCKET", bucket_name = "dev" }
 ]

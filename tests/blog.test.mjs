@@ -104,20 +104,20 @@ test("Blog braces and escapes inside JSON strings do not count as structural dep
         assert.deepEqual(await response.json(), { data: { ok: true } });
     } finally { await mf.dispose(); }
 });
-test("Blog unchanged fresh bypass does not rewrite its existing R2 envelope", async () => {
+test("Blog unchanged fresh bypass does not rewrite its existing KV envelope", async () => {
     const mf = await workerHarness("blog", () => new Response("same"));
     try {
         const url = "https://blog.laisky.com/pages/unchanged";
         const key = "blog-v2.25/" + sha("general:GET:" + url);
-        const bucket = await mf.getR2Bucket("BUCKET");
+        const kv = await mf.getKVNamespace("KV");
         const first = await mf.dispatchFetch(url, { headers: { Accept: "text/html" } });
         await first.text();
-        await eventually(async () => (await bucket.get(key)) !== null);
-        const before = await bucket.get(key);
+        await eventually(async () => (await kv.get(key)) !== null);
+        const before = await kv.get(key);
         await (await mf.dispatchFetch(url, { headers: { Accept: "text/html" } })).text();
         await new Promise(resolve => setTimeout(resolve, 100));
-        const after = await bucket.get(key);
-        assert.equal(after.etag, before.etag);
+        const after = await kv.get(key);
+        assert.equal(after, before);
     } finally { await mf.dispose(); }
 });
 test("Blog failed refresh releases its coordination slot for a later retry", async () => {
@@ -182,21 +182,21 @@ test("Blog successful Twitter card injection and cache response preserve the exi
         assert.equal(cardCalls, 1);
     } finally { await mf.dispose(); }
 });
-test("Blog R2 fallback keeps an existing unexpired envelope readable", async () => {
+test("Blog ignores retained R2 objects on KV miss and rebuilds from origin", async () => {
     let calls = 0;
-    const mf = await workerHarness("blog", () => { calls++; return new Response("origin"); });
+    const mf = await workerHarness("blog", () => { calls++; return new Response("origin"); }, undefined, { allowR2: true });
     try {
         const url = "https://blog.laisky.com/pages/r2";
         await (await mf.getR2Bucket("BUCKET")).put("blog-v2.25/" + sha("general:GET:" + url), JSON.stringify({
             expiration: Date.now() + 86400000,
             data: { body: "existing", headers: [], staleAt: Date.now() + 86400000 }
         }));
-        assert.equal(await (await mf.dispatchFetch(url)).text(), "existing");
-        assert.equal(calls, 0);
+        assert.equal(await (await mf.dispatchFetch(url)).text(), "origin");
+        assert.equal(calls, 1);
     } finally { await mf.dispose(); }
 });
 test("Blog oversized legacy R2 entries are ignored and replaced from origin", async () => {
-    const mf = await workerHarness("blog", () => new Response("origin"));
+    const mf = await workerHarness("blog", () => new Response("origin"), undefined, { allowR2: true });
     try {
         const url = "https://blog.laisky.com/pages/r2-large";
         await (await mf.getR2Bucket("BUCKET")).put("blog-v2.25/" + sha("general:GET:" + url), JSON.stringify({
@@ -206,20 +206,20 @@ test("Blog oversized legacy R2 entries are ignored and replaced from origin", as
         assert.equal(await (await mf.dispatchFetch(url)).text(), "origin");
     } finally { await mf.dispose(); }
 });
-test("Blog GraphQL wire JSON stays unchanged while reordered fields do not rewrite R2", async () => {
+test("Blog GraphQL wire JSON stays unchanged while reordered fields do not rewrite KV", async () => {
     let body = '{ "data": { "b": 2, "a": 1 } }';
     const mf = await workerHarness("blog", () => new Response(body, { headers: { "Content-Type": "application/json" } }));
     try {
         const url = "https://gq.laisky.com/query/?query=query%20%7B%20x%20%7D";
         const key = "blog-v2.25/" + sha("graphql:GET:/query/:" + JSON.stringify({ query: "query { x }", variables: null }));
-        const bucket = await mf.getR2Bucket("BUCKET");
+        const kv = await mf.getKVNamespace("KV");
         assert.equal(await (await mf.dispatchFetch(url, { headers: { "Cache-Control": "no-cache" } })).text(), body);
-        await eventually(async () => (await bucket.get(key)) !== null);
-        const before = await bucket.get(key);
+        await eventually(async () => (await kv.get(key)) !== null);
+        const before = await kv.get(key);
         body = '{ "data": { "a": 1, "b": 2 } }';
         assert.equal(await (await mf.dispatchFetch(url, { headers: { "Cache-Control": "no-cache" } })).text(), body);
         await new Promise(resolve => setTimeout(resolve, 100));
-        assert.equal((await bucket.get(key)).etag, before.etag);
+        assert.equal(await kv.get(key), before);
     } finally { await mf.dispose(); }
 });
 
@@ -240,7 +240,7 @@ for (const status of [204, 205, 304]) {
             await new Promise(resolve => setTimeout(resolve, 100));
             assert.equal(calls, 1);
             assert.equal((await (await mf.getKVNamespace("KV")).list()).keys.length, 0);
-            assert.equal((await (await mf.getR2Bucket("BUCKET")).list()).objects.length, 0);
+            assert.equal((await (await mf.dispatchFetch("https://test/_binding-state")).json()).r2Accesses, 0);
         } finally { await mf.dispose(); }
     });
 }
@@ -260,7 +260,7 @@ for (const status of [204, 205]) {
             await new Promise(resolve => setTimeout(resolve, 100));
             assert.equal(calls, 1);
             assert.equal((await (await mf.getKVNamespace("KV")).list()).keys.length, 0);
-            assert.equal((await (await mf.getR2Bucket("BUCKET")).list()).objects.length, 0);
+            assert.equal((await (await mf.dispatchFetch("https://test/_binding-state")).json()).r2Accesses, 0);
         } finally { await mf.dispose(); }
     });
 }

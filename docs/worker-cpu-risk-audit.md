@@ -1,5 +1,59 @@
 # Worker CPU and payload risk audit
 
+## KV-only cache change (2026-10-09)
+
+This section supersedes the historical KV/R2 fallback contract below. The blog,
+blog-dev, s3 and s3-dev entrypoints now read/write only KV, with all four BUCKET
+bindings removed. No public cf-utils implementation or dependency version changes.
+Speech source/configuration remains identical to main before this change.
+
+All 17 routes, Worker names, compatibility dates, KV namespace IDs, cache prefixes
+(`blog-v2.25/`, `s3-v0.1/`), logical/physical keys and existing envelope formats remain.
+Both physical KV TTLs are **seven days**: the pinned S3 cf-utils 0.0.5 default is
+604800 seconds. Blog retains its HTML 24-hour and GraphQL 600-second soft TTLs,
+write-on-change hashing, KV freshness touch and same-isolate refresh coalescing.
+Root redirects, post Twitter cards, MD5 image-path conversion, response status/
+headers, binary/HEAD/large streaming and raw GraphQL response bytes are retained.
+
+Authenticated/cookie requests bypass shared cache reads and writes. Origin responses
+with Set-Cookie or private/no-store Cache-Control are never written to shared KV;
+legacy envelopes with those headers are ignored. This prevents user-specific content
+from reading or overwriting a public key while retaining origin and post-card behavior.
+Public force/no-cache requests retain their existing refresh semantics.
+
+KV failures remain cache misses and write failures do not replace a successful origin
+response. **R2-only entries no longer provide a fallback**: absent/expired/unavailable KV
+requires origin access. A failed origin then returns its existing failure response;
+SWR still serves an available stale KV entry while a refresh fails. Origin load can
+increase during KV eviction, eventual-consistency misses or Free quota exhaustion.
+[KV Free limits](https://developers.cloudflare.com/kv/platform/limits/) include
+100000 reads/day and 1000 writes/day; same-key writes remain limited to one/second.
+[KV consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/) remains
+eventual; same-isolate coalescing provides no account-wide coordination.
+
+Workers Free was confirmed by Cloudflare rejection 100328 of an earlier non-deploying
+custom CPU-limit upload. No limits.cpu_ms is added, subscription changed or paid AI
+enabled. R2 billing is separate: removing these four cache bindings eliminates their
+R2 API calls but does not guarantee account-wide USD 0. Existing prod/dev objects and
+their verified seven-day lifecycle are retained; no bucket/data deletion, public
+access/security change or new credentials are part of this rollout.
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/) still applies to retained
+storage and any other consumers. Bounded searches of 27 personal repositories found
+no additional direct Worker BUCKET consumers; external npm clients and all account
+services were not exhaustively inventoried, so bucket retirement requires that check.
+
+Qualification uses offline workerd with no BUCKET binding and a poison binding-access
+counter, injected KV get/put failures, eviction/origin failure, binary/HEAD/streaming,
+refresh cleanup, share cards, exact GraphQL bytes/mutation/denial and private-cache
+exclusions. New pre-change tests recorded 26 failures and 2 passes. All 71 offline tests and lint passed; all four Wrangler 4.148.0 dry runs passed
+and emitted bundles without R2 access. Parsed TOML differs only by the four R2 arrays.
+Re-run checks against the exact merged tree before sequential live deployment. Capture the existing version per Worker, verify routes/control settings
+and all bindings except BUCKET, then verify safe health checks. Roll back to the
+captured version on failure and verify R2 binding restoration; retained bucket data
+allows the previous implementation to run. Billing already incurred is not reversible.
+
+## Historical resource-guard audit before the KV-only rollout
+
 Source audit: 2026-10-08, against main at `42a55fda066d3ea690df64d85bc260622b2fd26f`.
 The fixes below run entirely in local workerd/Miniflare with mocked outbound services and local KV/R2.
 They do not deploy Workers, provision resources, change a plan, or invalidate existing cache keys.

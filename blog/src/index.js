@@ -2,7 +2,6 @@
 
 import {
     kvSet,
-    bucketSet,
     headersFromArray,
     headersToArray,
     setDefaultCachePrefix,
@@ -12,6 +11,7 @@ import { sha256 } from 'js-sha256';
 import { readBodyWithinLimit, responseWithBody } from "../../shared/body-limits.js";
 import { parseBoundedJson, assertBoundedJson } from "../../shared/json-limits.js";
 import { createBoundedCache } from "../../shared/bounded-cache.js";
+import { isPublicCacheRequest, isPublicCacheResponse } from "../../shared/cache-policy.js";
 import { scheduleRefresh } from "./refresh.js";
 
 const MAX_CACHE_BODY_BYTES = 1024 * 1024;
@@ -55,30 +55,32 @@ Caching strategy (write-frequency reduction without lowering hit rate):
     stored hash. Identical content is never re-written (closes the text/html
     write hole where browser navigations bypassed the READ but wrote on every
     request). Unchanged-but-stale entries get a cheap KV-only freshness touch.
-  - split dual-write: real content changes write BOTH KV and R2; freshness
-    touches write KV ONLY, sparing the expensive R2 Class A PutObject.
+  - KV-only writes: real content changes and freshness touches use the same
+    KV keys and seven-day physical lifetime; no R2 reads or writes.
   - XFetch single-flight: revalidation is gated by probabilistic early
     expiration so a post-expiry stampede collapses toward a single refresh.
 
 NOTE: keep the cache prefix stable. Bumping it cold-misses the whole cache and
 temporarily tanks hit rate, which is exactly what we are trying to avoid.
 
-Companion infra: set an R2 Object Lifecycle "Expiration" rule of HARD_TTL days
-on the prod and dev buckets so never-expiring R2 objects are reclaimed (the
-in-payload `expiration` check keeps reads correct during the sweep window).
+Previously written R2 objects are left to their existing bucket lifecycle.
+This Worker no longer binds or accesses those buckets.
 */
 
 const CACHE_PREFIX = "blog-v2.25/"; // Increment version or use a date
 setDefaultCachePrefix(CACHE_PREFIX);
 const { cacheGet, kvGet } = createBoundedCache(
     CACHE_PREFIX, sha256, MAX_CACHE_BODY_BYTES, MAX_CACHE_BODY_BYTES * 6 + 128 * 1024,
-    value => isTextResponse(new Response(null, { headers: headersFromArray(value.headers) }))
+    value => {
+        const response = new Response(null, { headers: headersFromArray(value.headers) });
+        return isTextResponse(response) && isPublicCacheResponse(response);
+    }
 );
 
 const GraphqlAPI = "https://gq.laisky.com/query/";
 
 // --- caching tunables ---
-const HARD_TTL = 7 * 24 * 3600;     // physical lifetime of a cache entry (KV expirationTtl + R2 payload)
+const HARD_TTL = 7 * 24 * 3600;     // physical lifetime of a cache entry (KV expirationTtl)
 const SOFT_TTL_HTML = 24 * 3600;    // logical freshness window for HTML pages
 const SOFT_TTL_GQL = 600;           // logical freshness window for GraphQL queries
 const BETA = 1.5;                   // XFetch aggressiveness (>=1; higher = refresh earlier)
@@ -87,7 +89,7 @@ const EXPIRY_MARGIN_MS = 60 * 1000; // force one refresh this long before physic
 
 /**
  * ck derives the physical cache key exactly as cf-utils cacheGet/cacheSet do,
- * so the low-level kvGet/kvSet/bucketSet helpers address the same slot.
+ * so the low-level kvGet/kvSet helpers address the same slot.
  *
  * @param {string} key - logical cache key
  * @returns {string}
@@ -159,6 +161,7 @@ async function handleRequest(request, env, ctx) {
  * @returns {Boolean}
  */
 function isCacheEnable(request, cachePost = false) {
+    if (!isPublicCacheRequest(request)) return false;
     const url = new URL(request.url);
     const cacheControl = request.headers.get("Cache-Control") || "";
     const requestContentType = request.headers.get("Accept") || "";
@@ -298,6 +301,7 @@ function freshResponse(produced, headersSource, cacheStatus) {
  * @returns {Promise<void>}
  */
 async function writeIfChanged(env, key, produced, { softTtl, prior }) {
+    if (!isPublicCacheResponse(new Response(null, { headers: headersFromArray(produced.storeHeaders) }))) return;
     if (produced.body.length > MAX_CACHE_BODY_BYTES
         || encoder.encode(produced.body).byteLength > MAX_CACHE_BODY_BYTES) return;
     const now = Date.now();
@@ -309,13 +313,13 @@ async function writeIfChanged(env, key, produced, { softTtl, prior }) {
             console.log(`Cache unchanged+fresh, skip write: [cache key]`);
             return;
         }
-        // Unchanged but stale: KV-only freshness touch, skip the R2 PutObject.
+        // Unchanged but stale: retain the existing KV-only freshness touch.
         console.log(`Cache unchanged, KV-only staleAt touch: [cache key]`);
         await kvSet(env, ck(key), { ...prior, staleAt: now + softTtl * 1000 }, HARD_TTL);
         return;
     }
 
-    // Absent or genuinely changed: full dual write with the long physical TTL.
+    // Absent or changed: write KV with the unchanged long physical TTL.
     console.log(`Cache write (changed/new): [cache key]`);
     const envelope = {
         body: produced.body,
@@ -326,10 +330,7 @@ async function writeIfChanged(env, key, produced, { softTtl, prior }) {
         staleAt: now + softTtl * 1000,
         expiresAt: now + HARD_TTL * 1000
     };
-    await Promise.allSettled([
-        kvSet(env, ck(key), envelope, HARD_TTL),
-        bucketSet(env, ck(key), envelope, HARD_TTL)
-    ]);
+    await kvSet(env, ck(key), envelope, HARD_TTL);
 }
 
 /**
@@ -364,6 +365,7 @@ async function generalCache(request, env, ctx) {
             return produced.response;
         }
 
+        if (!isPublicCacheRequest(request)) return freshResponse(produced, produced.originHeaders, "BYPASS");
         const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
         ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_HTML, prior })
             .catch((err) => console.error(`generalCache write failed for [cache key]:`, err)));
@@ -451,6 +453,7 @@ async function insertTwitterCard(request, env, ctx, pathname) {
     }
 
     // Don't clobber an existing good entry when the card fetch failed transiently.
+    if (!isPublicCacheRequest(request)) return freshResponse(produced, produced.storeHeaders, "BYPASS");
     const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
     if (produced.cardFetchFailed && prior) {
         console.warn(`InsertTwitterCard: card fetch failed, preserving cached entry [cache key]`);
@@ -668,6 +671,7 @@ async function cacheGqQuery(request, env, ctx, pathname) {
         return produced.response;
     }
 
+    if (!isPublicCacheRequest(request)) return freshResponse(produced, produced.originHeaders, "BYPASS");
     const prior = didRead ? cached : await kvGet(env, ck(cacheKey)).catch(() => null);
     ctx.waitUntil(writeIfChanged(env, cacheKey, produced, { softTtl: SOFT_TTL_GQL, prior })
         .catch((err) => console.error(`CacheGqQuery write failed for [cache key]:`, err)));
