@@ -1,13 +1,18 @@
 {
   "devDependencies": {
-    "@eslint/js": "^9.12.0",
-    "eslint": "^9.12.0",
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
     "globals": "^15.10.0",
-    "wrangler": "^3.80.1"
+    "wrangler": "4.116.0"
   },
   "dependencies": {
     "@laisky/cf-utils": "^0.0.5",
     "js-md5": "^0.8.3",
     "js-sha256": "^0.11.0"
+  },
+  "overrides": {
+    "undici": "7.30.0",
+    "sharp": "0.35.5",
+    "flatted": "3.4.4"
   }
 }
