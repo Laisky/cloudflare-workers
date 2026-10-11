@@ -4,17 +4,26 @@
   "type": "module",
   "scripts": {
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
-    "lint": "eslint blog/src s3/src shared speech-to-text/src/index.js tests"
+    "lint": "eslint blog/src s3/src shared speech-to-text/src/index.js tests scripts",
+    "check:builds": "node scripts/check-worker-builds.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.24.2",
-    "miniflare": "4.20250404.0",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
     "cf-utils-blog": "npm:@laisky/cf-utils@0.0.13",
     "cf-utils-s3": "npm:@laisky/cf-utils@0.0.5",
     "js-md5": "0.8.3",
     "js-sha256": "0.11.0",
-    "@eslint/js": "9.24.0",
-    "eslint": "9.24.0",
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
     "globals": "16.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "undici": "7.30.0",
+    "sharp": "0.35.5",
+    "flatted": "3.4.4"
   }
 }
