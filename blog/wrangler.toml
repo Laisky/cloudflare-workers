@@ -7,9 +7,11 @@ name = "blog"
 main = "src/index.js"
 workers_dev = false
 compatibility_date = "2024-09-27"
+# /assets/* is deliberately not routed here, in production or dev. Cloudflare's cache already
+# serves these hashed files, and a bundle over the 1 MiB body limit would otherwise be pumped
+# through JavaScript on every request.
 routes = [
   { pattern = "blog.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
-  { pattern = "blog.laisky.com/assets/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   # { pattern = "blog.laisky.com/graphql/query/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },  # too many requests
@@ -29,7 +31,6 @@ workers_dev = true
 routes = [
   # blog-dev.laisky.workers.dev
   { pattern = "blog-dev.laisky.com", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
-  { pattern = "blog-dev.laisky.com/assets/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/p/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/pages/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
   { pattern = "blog-dev.laisky.com/graphql/query/*", zone_id = "6e6e3f6a91c9565f2449738051b2640e" },
